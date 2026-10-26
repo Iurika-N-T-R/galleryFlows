@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="#f57c00" android:pathData="M24,2a22,22 0,1 0,0.01 0z" />
+    <!-- nested folders with a photo inside -->
+    <path android:fillColor="#ffd7a8" android:pathData="M14,12h8l2.5,2.5h10.5v3h-21z" />
+    <path android:fillColor="#fff" android:pathData="M11,16h9l3,3h14v16h-26z" />
+    <path android:fillColor="#f57c00" android:pathData="M15,32l5,-7 4,5 3,-3 5,5z" />
+</vector>
