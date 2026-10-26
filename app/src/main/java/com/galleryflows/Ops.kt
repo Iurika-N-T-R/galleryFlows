@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.content.Context
 import android.media.MediaScannerConnection
@@ -88,7 +88,7 @@ object Ops {
 
 /** One hidden trash folder per storage volume, so trashing is a rename (instant, even for big videos). */
 object Trash {
-    const val DIR = ".galleryflow-trash"
+    const val DIR = ".galleryflows-trash"
     private const val KEEP_DAYS = 30L
 
     fun contains(f: File) = f.path in Prefs.trash

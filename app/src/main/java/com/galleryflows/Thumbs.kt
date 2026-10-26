@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.content.Context
 import android.graphics.Bitmap

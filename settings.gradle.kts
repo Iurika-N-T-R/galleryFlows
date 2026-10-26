@@ -4,5 +4,5 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
-rootProject.name = "galleryflow"
+rootProject.name = "galleryflows"
 include(":app")

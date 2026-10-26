@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.app.AlertDialog
 import android.content.Context
@@ -203,7 +203,7 @@ class ViewerActivity : Base() {
     /** A content:// or file:// URI from another app, as a real file we can browse next to. */
     private fun resolve(uri: Uri): File? {
         if (uri.scheme == "file") return uri.path?.let(::File)
-        if (uri.authority == "com.galleryflow.files") return File(uri.path!!)
+        if (uri.authority == "com.galleryflows.files") return File(uri.path!!)
         runCatching {
             contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull()?.let(::File)?.takeIf { it.canRead() }?.let { return it }

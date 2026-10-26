@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.app.AlertDialog
 import android.content.Context

@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.app.AlertDialog
 import android.content.ClipData
@@ -90,7 +90,7 @@ class MainActivity : Base() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(dp(32), 0, dp(32), 0)
             addView(TextView(this@MainActivity).apply {
-                text = "Gallery Flow a besoin de l'accès à tous les fichiers pour parcourir tes dossiers et sous-dossiers."
+                text = "galleryflows a besoin de l'accès à tous les fichiers pour parcourir tes dossiers et sous-dossiers."
                 textSize = 16f; gravity = Gravity.CENTER; setTextColor(WHITE)
             })
             addView(Button(this@MainActivity).apply {

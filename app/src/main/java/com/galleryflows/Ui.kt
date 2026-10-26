@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -130,7 +130,7 @@ abstract class Base : Activity() {
         window.decorView.alpha = 0f // nothing visible behind the prompt
         if (Lock.prompting) return
         Lock.prompting = true
-        authenticate("Déverrouiller Gallery Flow", {
+        authenticate("Déverrouiller galleryflows", {
             Lock.prompting = false; Lock.locked = false
             window.decorView.alpha = 1f
             onUnlocked()

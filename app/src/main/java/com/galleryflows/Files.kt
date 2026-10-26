@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.content.ContentProvider
 import android.content.ContentValues
@@ -33,6 +33,6 @@ class Files : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, args: Array<String>?) = 0
 
     companion object {
-        fun uri(f: File): Uri = Uri.Builder().scheme("content").authority("com.galleryflow.files").path(f.path).build()
+        fun uri(f: File): Uri = Uri.Builder().scheme("content").authority("com.galleryflows.files").path(f.path).build()
     }
 }

@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.app.AlertDialog
 import android.content.Intent
@@ -95,7 +95,7 @@ class SettingsActivity : Base() {
         }
         action("Exporter les paramètres", { "Réglages, dossiers, favoris et épingles en JSON" }) {
             startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("application/json").putExtra(Intent.EXTRA_TITLE, "galleryflow-parametres.json"), EXPORT)
+                .setType("application/json").putExtra(Intent.EXTRA_TITLE, "galleryflows-parametres.json"), EXPORT)
         }
         action("Importer les paramètres", { "Depuis un fichier exporté" }) {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), IMPORT)
@@ -103,7 +103,7 @@ class SettingsActivity : Base() {
 
         section("À propos")
         val version = packageManager.getPackageInfo(packageName, 0).versionName
-        action("Gallery Flow $version", { "Galerie avec navigation Dossier › Sous-dossier › … › Images" }) {}
+        action("galleryflows $version", { "Galerie avec navigation Dossier › Sous-dossier › … › Images" }) {}
     }
 
     @Deprecated("framework API")

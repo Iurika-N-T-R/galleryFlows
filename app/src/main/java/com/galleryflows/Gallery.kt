@@ -1,4 +1,4 @@
-package com.galleryflow
+package com.galleryflows
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -88,7 +88,7 @@ object Prefs {
 
     fun init(c: Context) {
         if (::sp.isInitialized) return
-        sp = c.getSharedPreferences("galleryflow", Context.MODE_PRIVATE)
+        sp = c.getSharedPreferences("galleryflows", Context.MODE_PRIVATE)
         positions = c.getSharedPreferences("positions", Context.MODE_PRIVATE)
         loadLists()
     }
