@@ -3,7 +3,7 @@
 Free, open-source gallery for Android that browses your **real folder tree**: Folder › Subfolder › Subfolder › … › Images.
 
 [![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![release](https://img.shields.io/github/v/release/Iurika-N-T-R/galleryflows?style=flat-square)](../../releases/latest)
+[![release](https://img.shields.io/github/v/release/Iurika-N-T-R/galleryFlows?style=flat-square)](../../releases/latest)
 
 Most galleries show one flat list of every folder that holds pictures: `Camera`, `Screenshots`, `Wallpapers`… and you never see how they are nested. galleryFlows starts from the folders you choose and lets you walk down them level by level, like a file manager that only shows your media.
 
