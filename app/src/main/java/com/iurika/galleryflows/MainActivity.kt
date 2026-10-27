@@ -2,6 +2,13 @@ package com.iurika.galleryflows
 
 import android.app.ActivityOptions
 import android.app.AlertDialog
+import android.widget.RadioGroup
+import android.widget.RadioButton
+import android.text.InputType
+import android.graphics.drawable.RippleDrawable
+import android.graphics.Typeface
+import android.graphics.RectF
+import android.content.res.ColorStateList
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.ShortcutInfo
@@ -23,7 +30,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
-import android.view.animation.DecelerateInterpolator
+import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.Button
@@ -51,6 +58,9 @@ class MainActivity : Base() {
     private val scrollMemory = HashMap<String, Int>()
     private var generation = 0
     private var slideFrom = 0 // next list shown slides in from this side: 1 = deeper, -1 = back up, 0 = no animation
+    private var leaving = false // the old level is still sliding out
+    private var whenLeft: (() -> Unit)? = null
+    private val standard = PathInterpolator(.2f, 0f, 0f, 1f) // Material standard easing
     private var built = false
     private val handler = Handler(Looper.getMainLooper())
     private val searchLater = Runnable { load() }
@@ -64,6 +74,8 @@ class MainActivity : Base() {
     private lateinit var search: EditText
     private lateinit var crumbs: LinearLayout
     private lateinit var crumbScroll: HorizontalScrollView
+    private lateinit var title: TextView
+    private lateinit var shuffleButton: ImageView
     private lateinit var status: TextView
     private lateinit var list: ListView
     private lateinit var selectionBar: LinearLayout
@@ -133,7 +145,16 @@ class MainActivity : Base() {
         }
         crumbs = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         crumbScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(crumbs) }
-        status = TextView(this).apply { setTextColor(GREY); textSize = 12f; setPadding(dp(16), dp(2), dp(16), dp(6)) }
+        title = TextView(this).apply {
+            setTextColor(WHITE); textSize = 26f; typeface = Typeface.DEFAULT_BOLD; setSingleLine(); ellipsize = TextUtils.TruncateAt.END
+        }
+        shuffleButton = icon(R.drawable.ic_shuffle) { shuffleDialog() }.apply { contentDescription = "Aléatoire" }
+        val titleRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title, LP(0, -2, 1f))
+            addView(shuffleButton, LP(dp(48), dp(48)))
+        }
+        status = TextView(this).apply { setTextColor(GREY); textSize = 13f; setPadding(dp(20), 0, dp(20), dp(10)) }
         list = ListView(this).apply {
             adapter = this@MainActivity.adapter
             divider = null; dividerHeight = 0; selector = ColorDrawable(0); isFastScrollEnabled = true
@@ -143,7 +164,8 @@ class MainActivity : Base() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(bar, LP(-1, dp(56)).apply { setMargins(dp(12), dp(8), dp(12), dp(4)) })
-            addView(crumbScroll, LP(-1, -2).apply { marginStart = dp(8) })
+            addView(crumbScroll, LP(-1, -2).apply { setMargins(dp(12), dp(8), dp(12), 0) })
+            addView(titleRow, LP(-1, -2).apply { setMargins(dp(20), dp(4), dp(8), 0) })
             addView(status)
             addView(list, LP(-1, 0, 1f))
             addView(selectionBar, LP(-1, -2))
@@ -153,6 +175,12 @@ class MainActivity : Base() {
             }
         }
         setContentView(root)
+        Session.locate = ::locate
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Session.locate = null
     }
 
     private fun focusSearch() {
@@ -171,9 +199,20 @@ class MainActivity : Base() {
         scrollMemory[key()] = list.firstVisiblePosition
         dir = f; mode = to
         slideFrom = if (back) -1 else 1
+        leave()
         selected.clear()
         search.text.clear(); handler.removeCallbacks(searchLater)
         load()
+    }
+
+    // Material "shared axis X": the old level slides 30 dp away while fading out, the new one comes in from the other side
+    private fun leave() {
+        leaving = true
+        list.animate().cancel()
+        list.animate().alpha(0f).translationX(-dp(30) * slideFrom.toFloat()).setDuration(90).setInterpolator(standard).withEndAction {
+            leaving = false
+            whenLeft?.invoke(); whenLeft = null
+        }.start()
     }
 
     @Suppress("OVERRIDE_DEPRECATION")
@@ -200,25 +239,28 @@ class MainActivity : Base() {
             picking -> "Choisir un fichier"
             else -> "Rechercher des fichiers"
         }
+        // Big title for where we are; the way back up is a small path above it
+        title.text = when { mode == Mode.FAVORITES -> "Favoris"; mode == Mode.TRASH -> "Corbeille"; d != null -> d.name; else -> "Galerie" }
+        shuffleButton.visibility = if (mode == Mode.TRASH || picking) View.GONE else View.VISIBLE
         crumbs.removeAllViews()
         crumbScroll.visibility = if (inside) View.VISIBLE else View.GONE
         crumb("Galerie") { go(null, back = true) }
-        if (mode == Mode.FAVORITES) crumb("Favoris") {}
-        if (mode == Mode.TRASH) crumb("Corbeille") {}
         if (d != null) {
             val root = rootOf(d)
-            generateSequence(d) { it.parentFile }.takeWhile { it.path.length >= root.path.length }
-                .toList().asReversed().forEach { f -> crumb(f.name) { go(f, back = f != d) } }
+            generateSequence(d.parentFile) { it.parentFile }.takeWhile { it.path.length >= root.path.length }
+                .toList().asReversed().forEach { f -> crumb(f.name) { go(f, back = true) } }
         }
-        (crumbs.getChildAt(crumbs.childCount - 1) as TextView).setTextColor(ACCENT)
         crumbScroll.post { crumbScroll.fullScroll(View.FOCUS_RIGHT) }
         renderSelectionBar()
     }
 
     private fun crumb(label: String, onClick: () -> Unit) {
-        if (crumbs.childCount > 0) crumbs.addView(TextView(this).apply { text = "›"; setTextColor(GREY); textSize = 18f })
+        if (crumbs.childCount > 0) crumbs.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_chevron); setColorFilter(GREY)
+        }, LP(dp(16), dp(16)))
         crumbs.addView(TextView(this).apply {
-            text = label; textSize = 15f; setTextColor(WHITE); setPadding(dp(8), dp(8), dp(8), dp(8))
+            text = label; textSize = 13f; setTextColor(GREY); setSingleLine(); setPadding(dp(8), dp(6), dp(8), dp(6))
+            background = RippleDrawable(ColorStateList.valueOf(0x33ffffff), null, rounded(WHITE, 14))
             setOnClickListener { onClick() }
         })
     }
@@ -271,6 +313,7 @@ class MainActivity : Base() {
     }
 
     private fun show(cards: List<Card>, files: List<File>, keepScroll: Boolean) {
+        if (leaving) { whenLeft = { show(cards, files, keepScroll) }; return }
         media = files
         selected.retainAll(files.toSet())
         rows = if (Prefs.listView) (cards + files).map { listOf(it) }
@@ -278,13 +321,13 @@ class MainActivity : Base() {
         adapter.notifyDataSetChanged()
         if (!keepScroll) list.setSelection(scrollMemory[key()] ?: 0)
         if (slideFrom != 0) {
-            list.alpha = 0f; list.translationX = dp(48) * slideFrom.toFloat()
-            list.animate().alpha(1f).translationX(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            list.alpha = 0f; list.translationX = dp(30) * slideFrom.toFloat()
+            list.animate().alpha(1f).translationX(0f).setDuration(210).setInterpolator(standard).start()
             slideFrom = 0
         }
         status.text = listOfNotNull(
-            cards.size.takeIf { it > 0 }?.let { "$it dossier(s)" },
-            files.size.takeIf { it > 0 }?.let { "$it fichier(s)" },
+            cards.size.takeIf { it > 0 }?.let { plural(it, "dossier") },
+            files.size.takeIf { it > 0 }?.let { plural(it, "fichier") },
             if (mode == Mode.TRASH && files.isNotEmpty()) "supprimés définitivement après 30 jours" else null,
         ).joinToString(" · ").ifEmpty { if (mode == Mode.TRASH) "La corbeille est vide" else "Aucun média ici" }
         updateSelection()
@@ -306,9 +349,9 @@ class MainActivity : Base() {
             if (Prefs.listView) {
                 val v = (convert as? LinearLayout)?.takeIf { it.tag == "line" } ?: lineCell()
                 when (val item = row[0]) {
-                    is Card -> bindLine(v, item.info.cover, item.name, "${item.info.count} fichier(s)", item.pinned, false,
+                    is Card -> bindLine(v, item.info.cover, item.name, plural(item.info.count, "fichier"), item.pinned, false,
                         { item.open() }, { item.options?.invoke(); item.options != null })
-                    is File -> bindLine(v, item, item.name, details(item), false, item in selected, { tap(item, v) }, { toggle(item); true })
+                    is File -> bindLine(v, item, item.name, details(item), false, item in selected, { tap(item, v.getChildAt(0)) }, { toggle(item); true })
                 }
                 return v
             }
@@ -406,7 +449,7 @@ class MainActivity : Base() {
             // the picture shrinks a little while selected
             img.animate().scaleX(if (on) .88f else 1f).scaleY(if (on) .88f else 1f).setDuration(150).start()
         }
-        cell.setOnClickListener { tap(f, cell) }
+        cell.setOnClickListener { tap(f, img) }
         cell.setOnLongClickListener { toggle(f); true }
     }
 
@@ -416,10 +459,79 @@ class MainActivity : Base() {
             picking && !pickMultiple -> returnPicked(listOf(f))
             else -> {
                 Session.items = media
-                startActivity(Intent(this, ViewerActivity::class.java).putExtra("pos", media.indexOf(f)).putExtra("trash", mode == Mode.TRASH),
-                    ActivityOptions.makeScaleUpAnimation(from, 0, 0, from.width, from.height).toBundle()) // grows out of the thumbnail
+                // the viewer grows the picture out of this thumbnail itself, so no window animation
+                startActivity(Intent(this, ViewerActivity::class.java).putExtra("pos", media.indexOf(f)).putExtra("trash", mode == Mode.TRASH)
+                    .putExtra("from", rectOf(from)), ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle())
             }
         }
+    }
+
+    private fun rectOf(v: View): RectF {
+        val p = IntArray(2).also(v::getLocationInWindow)
+        return RectF(p[0].toFloat(), p[1].toFloat(), p[0] + v.width.toFloat(), p[1] + v.height.toFloat())
+    }
+
+    /** The thumbnail showing [f] on screen right now, if any (Thumbs tags each view with "path|…"). */
+    private fun locate(f: File): RectF? {
+        val prefix = "${f.path}|"
+        fun find(v: View): View? = when {
+            v is ImageView && (v.tag as? String)?.startsWith(prefix) == true && v.isShown -> v
+            v is ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { find(v.getChildAt(it)) }
+            else -> null
+        }
+        return find(list)?.let(::rectOf)
+    }
+
+    // ---- shuffle ----
+
+    /** Random order over this folder (with its subfolders or not), moving on by itself after a timer. */
+    private fun shuffleDialog() {
+        val d = dir
+        val favorites = mode == Mode.FAVORITES
+        val pad = dp(24)
+        val only = RadioButton(this).apply { id = View.generateViewId(); text = if (d == null) "Dossiers principaux seulement" else "Ce dossier seulement" }
+        val deep = RadioButton(this).apply { id = View.generateViewId(); text = "Avec tous les sous-dossiers" }
+        val scope = RadioGroup(this).apply { addView(only); addView(deep); check(if (Prefs.shuffleSub) deep.id else only.id) }
+        val minutes = Prefs.slideSeconds >= 60 && Prefs.slideSeconds % 60 == 0
+        val amount = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER; setText("${if (minutes) Prefs.slideSeconds / 60 else Prefs.slideSeconds}")
+            gravity = Gravity.CENTER; setSelectAllOnFocus(true)
+        }
+        val sec = RadioButton(this).apply { id = View.generateViewId(); text = "secondes" }
+        val min = RadioButton(this).apply { id = View.generateViewId(); text = "minutes" }
+        val unit = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL; addView(sec); addView(min); check(if (minutes) min.id else sec.id) }
+        val view = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(pad, dp(8), pad, 0)
+            if (!favorites) addView(scope)
+            addView(TextView(this@MainActivity).apply { text = "Passer au suivant toutes les"; setPadding(0, dp(16), 0, 0) })
+            addView(LinearLayout(this@MainActivity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(amount, LP(dp(72), -2).apply { marginEnd = dp(12) })
+                addView(unit)
+            })
+        }
+        AlertDialog.Builder(this).setTitle("Aléatoire").setView(view)
+            .setPositiveButton("Lancer") { _, _ ->
+                val n = amount.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 1
+                Prefs.slideSeconds = if (unit.checkedRadioButtonId == min.id) n * 60 else n
+                Prefs.shuffleSub = scope.checkedRadioButtonId == deep.id
+                val sources = if (d != null) listOf(d) else Prefs.roots.map(::File)
+                val sub = Prefs.shuffleSub
+                thread {
+                    val files = when {
+                        favorites -> media
+                        sub -> Scan.collect(sources)
+                        else -> sources.flatMap { Scan.children(it).second }
+                    }.shuffled()
+                    runOnUiThread {
+                        if (files.isEmpty()) return@runOnUiThread toast("Aucun média ici")
+                        Session.items = files
+                        startActivity(Intent(this, ViewerActivity::class.java).putExtra("pos", 0).putExtra("shuffle", true),
+                            ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle())
+                    }
+                }
+            }
+            .setNegativeButton("Annuler", null).show()
     }
 
     private fun returnPicked(files: List<File>) {
@@ -482,7 +594,7 @@ class MainActivity : Base() {
         val permanent = mode == Mode.TRASH || !Prefs.useTrash
         val run = { guardOps { runOp { Ops.delete(this, files, permanent) } } }
         if (Prefs.skipDeleteConfirm) run()
-        else confirm(if (permanent) "Supprimer définitivement ${files.size} fichier(s) ?" else "Mettre ${files.size} fichier(s) à la corbeille ?", run)
+        else confirm(if (permanent) "Supprimer définitivement ${plural(files.size, "fichier")} ?" else "Mettre ${plural(files.size, "fichier")} à la corbeille ?", run)
     }
 
     private fun folderOptions(f: File) = choose(f.name, listOfNotNull(
@@ -539,6 +651,7 @@ class MainActivity : Base() {
             "Ajouter un dossier" to {
                 pickFolder("Ajouter un dossier", d) { f -> Prefs.roots = Prefs.roots + f.path; go(null) }
             },
+            if (mode != Mode.TRASH && !picking) "Aléatoire…" to ::shuffleDialog else null,
             "Actualiser" to ::refresh,
             if (picking) null else "Paramètres" to { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
@@ -579,3 +692,5 @@ class MainActivity : Base() {
         }.show()
     }
 }
+
+fun plural(n: Int, word: String) = "$n $word" + if (n > 1) "s" else ""

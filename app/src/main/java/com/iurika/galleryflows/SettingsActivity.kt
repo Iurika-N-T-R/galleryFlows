@@ -62,10 +62,11 @@ class SettingsActivity : Base() {
         toggle("Appuyer sur les côtés pour changer de média", Prefs::tapSides)
         toggle("Fermer par un geste vers le bas", Prefs::swipeDownClose)
         toggle("Afficher les détails du média (taille, date, résolution)", Prefs::showDetails)
-        action("Durée du diaporama", { "${Prefs.slideSeconds} s par média" }) {
-            val values = listOf(2, 3, 5, 8, 10, 15, 30)
-            AlertDialog.Builder(this).setTitle("Durée du diaporama")
-                .setSingleChoiceItems(values.map { "$it secondes" }.toTypedArray(), values.indexOf(Prefs.slideSeconds)) { d, i ->
+        fun duration(s: Int) = if (s >= 60 && s % 60 == 0) "${s / 60} min" else "$s s"
+        action("Durée du diaporama et de l'aléatoire", { "${duration(Prefs.slideSeconds)} par média" }) {
+            val values = listOf(2, 3, 5, 8, 10, 15, 30, 60, 120, 300, 600)
+            AlertDialog.Builder(this).setTitle("Durée par média")
+                .setSingleChoiceItems(values.map(::duration).toTypedArray(), values.indexOf(Prefs.slideSeconds)) { d, i ->
                     Prefs.slideSeconds = values[i]; d.dismiss(); refresh()
                 }.show()
         }

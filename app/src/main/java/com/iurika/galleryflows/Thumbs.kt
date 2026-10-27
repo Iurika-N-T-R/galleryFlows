@@ -49,22 +49,30 @@ object Thumbs {
         if (file == null || hit != null) return
         pool.execute {
             if (view.tag != k) return@execute // scrolled away before its turn
-            val bmp = get(file, k!!) ?: return@execute
-            // fade in, like other galleries, instead of popping in
-            main.post { if (view.tag == k) view.setImageDrawable(TransitionDrawable(arrayOf(ColorDrawable(0), BitmapDrawable(view.resources, bmp))).apply {
-                isCrossFadeEnabled = true; startTransition(180)
-            }) }
+            val (bmp, fresh) = get(file, k!!) ?: return@execute
+            main.post {
+                if (view.tag != k) return@post
+                // a thumbnail that had to be made fades in; one from the disk cache is there at once, fading it would only flicker
+                if (!fresh) view.setImageBitmap(bmp)
+                else view.setImageDrawable(TransitionDrawable(arrayOf(ColorDrawable(0), BitmapDrawable(view.resources, bmp))).apply {
+                    isCrossFadeEnabled = true; startTransition(150)
+                })
+            }
         }
     }
 
-    private fun get(file: File, k: String): Bitmap? {
-        mem.get(k)?.let { return it }
+    /** The thumbnail, and whether it had to be made from the file. */
+    private fun get(file: File, k: String): Pair<Bitmap, Boolean>? {
+        mem.get(k)?.let { return it to false }
         val d = disk(k)
-        val bmp = BitmapFactory.decodeFile(d.path) ?: runCatching {
+        BitmapFactory.decodeFile(d.path)?.let { mem.put(k, it); return it to false }
+        val bmp = runCatching {
             val size = Size(PX, PX)
             if (kindOf(file.name) == Kind.VIDEO) ThumbnailUtils.createVideoThumbnail(file, size, null)
             else ThumbnailUtils.createImageThumbnail(file, size, null)
-        }.getOrNull()?.also { b -> runCatching { d.outputStream().use { b.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, it) } } }
-        return bmp?.also { mem.put(k, it) }
+        }.getOrNull() ?: return null
+        runCatching { d.outputStream().use { bmp.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, it) } }
+        mem.put(k, bmp)
+        return bmp to true
     }
 }

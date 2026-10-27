@@ -38,6 +38,7 @@
         <activity
             android:name=".ViewerActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:theme="@style/Viewer"
             android:exported="true">
             <!-- "Ouvrir avec galleryFlows" from file managers, downloads, messaging apps -->
             <intent-filter>

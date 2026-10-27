@@ -1,6 +1,15 @@
 package com.iurika.galleryflows
 
 import android.animation.ValueAnimator
+import java.util.concurrent.Executors
+import android.view.animation.PathInterpolator
+import android.view.ViewConfiguration
+import android.view.VelocityTracker
+import android.graphics.drawable.ColorDrawable
+import android.graphics.Rect
+import android.graphics.Bitmap
+import android.animation.AnimatorListenerAdapter
+import android.animation.Animator
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
@@ -34,7 +43,6 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
-import android.view.animation.DecelerateInterpolator
 import android.webkit.MimeTypeMap
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -74,11 +82,33 @@ class ViewerActivity : Base() {
     private var barsVisible = true
     private val handler = Handler(Looper.getMainLooper())
     private var slideshow = false
-    private val nextSlide = object : Runnable {
-        override fun run() {
-            if (pos < items.lastIndex) { pos++; show(); handler.postDelayed(this, Prefs.slideSeconds * 1000L) } else stopSlideshow()
-        }
+    private var loopSlides = false // shuffle: start over at the end instead of stopping
+    // next media, cross-faded; show() schedules the following one
+    private val nextSlide = Runnable {
+        val n = when { pos < items.lastIndex -> pos + 1; loopSlides -> 0; else -> -1 }
+        if (n < 0) return@Runnable stopSlideshow()
+        pos = n; show()
+        content.alpha = 0f
+        content.animate().alpha(1f).setDuration(400).start()
     }
+
+    private lateinit var root: FrameLayout
+    private val bg = ColorDrawable(0xff000000.toInt())
+    private val standard = PathInterpolator(.2f, 0f, 0f, 1f) // Material standard easing
+    private var animating = false
+    private var closing = false
+    // Screen-sized decodes of the media around the current one, so a swipe shows them sharp at once
+    private val previews = HashMap<String, Bitmap>()
+    private val loader = Executors.newSingleThreadExecutor()
+    private var neighbor: ImageView? = null // the page coming in beside the current one during a swipe
+    private val gap get() = dp(16)
+
+    // Touch: 0 undecided, 1 swiping pages, 2 dragging down to close, -1 left to the views (zoom, pan, pinch, bars)
+    private var dragMode = 0
+    private var downX = 0f
+    private var downY = 0f
+    private var velocity: VelocityTracker? = null
+    private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
     private val hideHint = Runnable { hint.visibility = View.GONE }
     private val tick = object : Runnable {
         override fun run() {
@@ -92,19 +122,6 @@ class ViewerActivity : Base() {
             playPause.setImageResource(if (v.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             handler.postDelayed(this, 250)
         }
-    }
-
-    // Swipe left/right = next/previous, swipe down = close. Ignored while zoomed, so panning stays panning.
-    private val flings by lazy {
-        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (image?.isZoomed == true) return false
-                if (abs(vx) > abs(vy) && abs(vx) > 800) { step(if (vx < 0) 1 else -1); return true }
-                val gesturesOwnVertical = video != null && Prefs.videoGestures
-                if (Prefs.swipeDownClose && !gesturesOwnVertical && vy > 1500 && vy > abs(vx)) { closeDown(); return true }
-                return false
-            }
-        })
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -121,6 +138,7 @@ class ViewerActivity : Base() {
                     items = (if (f in siblings) siblings else listOf(f)).toMutableList()
                     pos = items.indexOf(f)
                     show()
+                    open()
                 }
             }
             return
@@ -129,6 +147,7 @@ class ViewerActivity : Base() {
         pos = intent.getIntExtra("pos", 0)
         if (pos !in items.indices) return finish() // process was killed, the list is gone
         show()
+        open()
     }
 
     private fun buildUi() {
@@ -137,7 +156,7 @@ class ViewerActivity : Base() {
         title = TextView(this).apply { setTextColor(WHITE); textSize = 18f; setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         topBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL; background = shade(GradientDrawable.Orientation.TOP_BOTTOM)
-            addView(icon(R.drawable.ic_back) { finish() })
+            addView(icon(R.drawable.ic_back) { close() })
             addView(title, LP(0, -2, 1f))
             addView(icon(R.drawable.ic_more) { menu(it) })
         }
@@ -181,8 +200,8 @@ class ViewerActivity : Base() {
             setTextColor(WHITE); textSize = 16f; background = rounded(0xaa000000.toInt(), 12); setPadding(dp(16), dp(10), dp(16), dp(10))
             visibility = View.GONE
         }
-        setContentView(FrameLayout(this).apply {
-            setBackgroundColor(0xff000000.toInt())
+        root = FrameLayout(this).apply {
+            background = bg
             addView(content)
             addView(hint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
@@ -193,7 +212,8 @@ class ViewerActivity : Base() {
                 bottomBar.setPadding(b.left, dp(8), b.right, b.bottom)
                 ins
             }
-        })
+        }
+        setContentView(root)
         window.insetsController?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (Prefs.autoHideUi) toggleBars()
     }
@@ -224,11 +244,220 @@ class ViewerActivity : Base() {
         return out
     }
 
+    // Swipes are handled here, above the views: sideways pages follow the finger, down drags the picture away.
+    // Zoomed pictures, pinches and the bars keep their own touches.
     override fun dispatchTouchEvent(e: MotionEvent): Boolean {
-        if (slideshow && e.action == MotionEvent.ACTION_DOWN) stopSlideshow()
-        if (e.pointerCount == 1) flings.onTouchEvent(e)
-        return super.dispatchTouchEvent(e)
+        if (closing || animating) return true
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (slideshow && !loopSlides) stopSlideshow()
+                downX = e.rawX; downY = e.rawY
+                val onBars = barsVisible && (e.y < topBar.bottom || e.y > bottomBar.top)
+                dragMode = if (image?.isZoomed == true || onBars) -1 else 0
+                velocity?.recycle(); velocity = VelocityTracker.obtain()
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> if (dragMode == 0) dragMode = -1
+        }
+        velocity?.addMovement(e)
+        if (dragMode == 0 && e.actionMasked == MotionEvent.ACTION_MOVE) {
+            val dx = e.rawX - downX
+            val dy = e.rawY - downY
+            val videoOwnsVertical = video != null && Prefs.videoGestures
+            if (abs(dx) > slop && abs(dx) > abs(dy)) dragMode = 1
+            else if (dy > slop && dy > abs(dx) && Prefs.swipeDownClose && !videoOwnsVertical) dragMode = 2
+            if (dragMode > 0) {
+                downX = e.rawX; downY = e.rawY // start from here, no jump of a slop
+                val cancel = MotionEvent.obtain(e).apply { action = MotionEvent.ACTION_CANCEL }
+                super.dispatchTouchEvent(cancel) // the views below stop seeing this gesture
+                cancel.recycle()
+            }
+        }
+        if (dragMode <= 0) return super.dispatchTouchEvent(e)
+        val dx = e.rawX - downX
+        val dy = e.rawY - downY
+        when (e.actionMasked) {
+            MotionEvent.ACTION_MOVE -> if (dragMode == 1) dragPage(dx) else dragDown(dx, dy)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val v = velocity!!.apply { computeCurrentVelocity(1000) }
+                val fast = dp(600)
+                if (dragMode == 1) {
+                    val delta = if (dx < 0) 1 else -1
+                    val flung = abs(v.xVelocity) > fast && (v.xVelocity < 0) == (dx < 0)
+                    settlePage(if (neighbor != null && (abs(dx) > root.width / 3 || flung)) delta else 0)
+                } else if (dy > root.height * .12f || v.yVelocity > fast) close()
+                else restoreDrag()
+                dragMode = 0
+            }
+        }
+        return true
     }
+
+    // ---- paging ----
+
+    private fun neighborFor(delta: Int): ImageView? {
+        val n = pos + delta
+        if (n !in items.indices) return null
+        val nb = neighbor ?: ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+            .also { neighbor = it; root.addView(it, 1, FrameLayout.LayoutParams(-1, -1)) }
+        if (nb.tag != n) { nb.tag = n; nb.setImageBitmap(previews[items[n].path] ?: Thumbs.cached(items[n])) }
+        return nb
+    }
+
+    private fun dropNeighbor() { neighbor?.let(root::removeView); neighbor = null }
+
+    private fun dragPage(dx: Float) {
+        val delta = if (dx < 0) 1 else -1
+        val nb = neighborFor(delta)
+        if (nb == null) dropNeighbor()
+        val x = if (nb == null) dx / 3 else dx // resists past the first and last media
+        content.translationX = x
+        nb?.translationX = x + delta * (root.width + gap)
+    }
+
+    /** Ends a swipe: [delta] = 1 or -1 moves on, 0 springs back. */
+    private fun settlePage(delta: Int) {
+        val w = (root.width + gap).toFloat()
+        val nb = neighbor
+        animating = true
+        nb?.animate()?.translationX(((nb.tag as Int) - pos - delta) * w)?.setDuration(250)?.setInterpolator(standard)?.start()
+        content.animate().translationX(-delta * w).setDuration(250).setInterpolator(standard).withEndAction {
+            animating = false
+            if (delta != 0) { pos += delta; show() }
+            content.translationX = 0f
+            dropNeighbor()
+        }.start()
+    }
+
+    private fun step(delta: Int) {
+        val nb = neighborFor(delta) ?: return
+        nb.translationX = delta * (root.width + gap).toFloat()
+        settlePage(delta)
+    }
+
+    // ---- drag down to close ----
+
+    private fun dragDown(dx: Float, dy: Float) {
+        val p = (abs(dy) / root.height).coerceIn(0f, 1f)
+        val k = 1 - p * .4f
+        content.translationX = dx; content.translationY = dy
+        content.scaleX = k; content.scaleY = k
+        bg.alpha = (255 * (1 - p * 2.5f)).coerceAtLeast(0f).toInt()
+        (1 - p * 6).coerceAtLeast(0f).let { topBar.alpha = it; bottomBar.alpha = it }
+    }
+
+    private fun restoreDrag() {
+        content.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f).setDuration(200).setInterpolator(standard).start()
+        topBar.animate().alpha(1f).setDuration(200).start(); bottomBar.animate().alpha(1f).setDuration(200).start()
+        fadeBg(255, 200)
+    }
+
+    private fun fadeBg(to: Int, duration: Long, done: () -> Unit = {}) {
+        ValueAnimator.ofInt(bg.alpha, to).apply {
+            this.duration = duration
+            addUpdateListener { bg.alpha = it.animatedValue as Int }
+            addListener(object : AnimatorListenerAdapter() { override fun onAnimationEnd(a: Animator) = done() })
+        }.start()
+    }
+
+    // ---- open and close: the picture grows out of its thumbnail and shrinks back into it ----
+
+    private fun windowToRoot(r: RectF) = RectF(r).apply { val o = IntArray(2).also(root::getLocationInWindow); offset(-o[0].toFloat(), -o[1].toFloat()) }
+
+    /** Where [bmp] sits fitted to the screen. */
+    private fun fitted(bmp: Bitmap): RectF {
+        val w = root.width.toFloat(); val h = root.height.toFloat()
+        val s = min(w / bmp.width, h / bmp.height)
+        return RectF((w - bmp.width * s) / 2, (h - bmp.height * s) / 2, (w + bmp.width * s) / 2, (h + bmp.height * s) / 2)
+    }
+
+    /** [fit] grown to cover [thumb] and centered on it: the picture as a center-cropped thumbnail shows it. */
+    private fun covering(fit: RectF, thumb: RectF): RectF {
+        val k = max(thumb.width() / fit.width(), thumb.height() / fit.height())
+        val hw = fit.width() * k / 2; val hh = fit.height() * k / 2
+        return RectF(thumb.centerX() - hw, thumb.centerY() - hh, thumb.centerX() + hw, thumb.centerY() + hh)
+    }
+
+    /**
+     * A stand-in of [bmp] goes from [from] to [to], each a (picture rect, visible part) pair:
+     * the picture moves and scales while its crop opens or closes, like Material's container transform.
+     */
+    private fun morph(bmp: Bitmap, from: Pair<RectF, RectF>, to: Pair<RectF, RectF>, bgTo: Int, duration: Long, done: () -> Unit) {
+        val fit = fitted(bmp)
+        val ghost = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_XY; setImageBitmap(bmp); pivotX = 0f; pivotY = 0f }
+        root.addView(ghost, 1, FrameLayout.LayoutParams(fit.width().roundToInt(), fit.height().roundToInt()))
+        val bgFrom = bg.alpha
+        val pic = RectF()
+        val clip = RectF()
+        fun lerp(a: RectF, b: RectF, t: Float, out: RectF) =
+            out.set(a.left + (b.left - a.left) * t, a.top + (b.top - a.top) * t, a.right + (b.right - a.right) * t, a.bottom + (b.bottom - a.bottom) * t)
+        animating = true
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            this.duration = duration; interpolator = standard
+            addUpdateListener {
+                val t = it.animatedValue as Float
+                lerp(from.first, to.first, t, pic); lerp(from.second, to.second, t, clip)
+                val k = pic.width() / fit.width()
+                ghost.scaleX = k; ghost.scaleY = k; ghost.translationX = pic.left; ghost.translationY = pic.top
+                ghost.clipBounds = Rect(((clip.left - pic.left) / k).toInt(), ((clip.top - pic.top) / k).toInt(),
+                    ((clip.right - pic.left) / k).roundToInt(), ((clip.bottom - pic.top) / k).roundToInt())
+                bg.alpha = (bgFrom + (bgTo - bgFrom) * t).toInt()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(a: Animator) { animating = false; done(); root.removeView(ghost) }
+            })
+        }.start()
+    }
+
+    private fun open() {
+        bg.alpha = 0
+        content.alpha = 0f; topBar.alpha = 0f; bottomBar.alpha = 0f
+        @Suppress("DEPRECATION") val from = intent.getParcelableExtra<RectF>("from")
+        val bmp = Thumbs.cached(current())
+        root.post {
+            listOf(topBar, bottomBar).forEach { it.animate().alpha(1f).setStartDelay(150).setDuration(150).start() }
+            if (intent.getBooleanExtra("shuffle", false)) startSlideshow(loop = true)
+            if (from != null && bmp != null && root.width > 0) {
+                val thumb = windowToRoot(from)
+                val fit = fitted(bmp)
+                morph(bmp, covering(fit, thumb) to thumb, fit to fit, 255, 300) { content.alpha = 1f }
+            } else {
+                // nothing to grow from: fade through, growing from 92 %
+                content.scaleX = .92f; content.scaleY = .92f
+                content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(250).setInterpolator(standard).start()
+                fadeBg(255, 250)
+            }
+        }
+    }
+
+    private fun close() {
+        if (closing) return
+        closing = true
+        stopSlideshow()
+        video?.pause()
+        val finishNow = { finish(); @Suppress("DEPRECATION") overridePendingTransition(0, 0) }
+        topBar.animate().alpha(0f).setDuration(100).start(); bottomBar.animate().alpha(0f).setDuration(100).start()
+        val f = current()
+        val bmp = Thumbs.cached(f)
+        // only back into the grid it came from, not into a browser left open behind an "Open with"
+        val target = Session.locate?.takeIf { intent.data == null }?.invoke(f)?.let(::windowToRoot)
+        if (bmp != null && target != null && image?.isZoomed != true && root.width > 0) {
+            val fit = fitted(bmp)
+            // where the picture is right now, dragged or not: content scales about its center and follows the finger
+            val k = content.scaleX
+            val cx = root.width / 2f + content.translationX
+            val cy = root.height / 2f + content.translationY
+            val now = RectF(cx + (fit.left - root.width / 2f) * k, cy + (fit.top - root.height / 2f) * k,
+                cx + (fit.right - root.width / 2f) * k, cy + (fit.bottom - root.height / 2f) * k)
+            content.visibility = View.INVISIBLE
+            morph(bmp, now to now, covering(fit, target) to target, 0, 260, finishNow)
+        } else {
+            content.animate().alpha(0f).scaleX(content.scaleX * .92f).scaleY(content.scaleY * .92f).setDuration(200).setInterpolator(standard).start()
+            fadeBg(0, 200, finishNow)
+        }
+    }
+
+    @Deprecated("Activity API")
+    override fun onBackPressed() = close()
 
     override fun onUnlocked() {
         val edited = Session.edited ?: return
@@ -240,23 +469,8 @@ class ViewerActivity : Base() {
 
     override fun onPause() { super.onPause(); savePosition(); video?.pause() }
 
-    override fun onDestroy() { super.onDestroy(); handler.removeCallbacksAndMessages(null) }
+    override fun onDestroy() { super.onDestroy(); handler.removeCallbacksAndMessages(null); loader.shutdownNow() }
 
-    private fun step(delta: Int) {
-        val n = pos + delta
-        if (n !in items.indices) return
-        pos = n; show()
-        // the next picture comes in from the side it was swiped from
-        content.translationX = content.width * .3f * delta; content.alpha = .3f
-        content.animate().translationX(0f).alpha(1f).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
-    }
-
-    private fun closeDown() {
-        content.animate().translationY(content.height.toFloat()).alpha(0f).setDuration(200).withEndAction {
-            finish()
-            @Suppress("DEPRECATION") overridePendingTransition(0, android.R.anim.fade_out)
-        }.start()
-    }
 
     private fun show() {
         savePosition()
@@ -270,6 +484,25 @@ class ViewerActivity : Base() {
         star.setColorFilter(if (f.path in Prefs.favorites) ACCENT else WHITE)
         renderDetails(f)
         if (kindOf(f.name) == Kind.VIDEO && !Prefs.externalPlayer) showVideo(f) else showImage(f)
+        if (slideshow) { handler.removeCallbacks(nextSlide); handler.postDelayed(nextSlide, Prefs.slideSeconds * 1000L) }
+        preload()
+    }
+
+    private fun preload() {
+        val around = (pos - 1..pos + 1).filter { it in items.indices }.map { items[it] }
+        previews.keys.retainAll(around.map { it.path }.toSet())
+        val side = max(root.width, root.height).takeIf { it > 0 } ?: 2400
+        around.filter { it.path !in previews && kindOf(it.name) != Kind.VIDEO }.forEach { f ->
+            loader.execute {
+                val b = runCatching { Images.decode(f, side) }.getOrNull() ?: return@execute
+                runOnUiThread {
+                    val i = items.indexOf(f)
+                    if (i < pos - 1 || i > pos + 1) return@runOnUiThread
+                    previews[f.path] = b
+                    neighbor?.takeIf { it.tag == i }?.setImageBitmap(b)
+                }
+            }
+        }
     }
 
     private fun renderDetails(f: File) {
@@ -288,7 +521,7 @@ class ViewerActivity : Base() {
         val v = ZoomImageView(this).apply { onTap = ::tapped }
         image = v
         content.addView(v, FrameLayout.LayoutParams(-1, -1))
-        Thumbs.cached(f)?.let(v::setImageBitmap) // instant preview while the full image decodes
+        (previews[f.path] ?: Thumbs.cached(f))?.let(v::setImageBitmap) // instant preview while the full image decodes
         if (kindOf(f.name) == Kind.VIDEO) { // external player mode: poster + play button
             thread {
                 val poster = runCatching { ThumbnailUtils.createVideoThumbnail(f, Size(1280, 1280), null) }.getOrNull()
@@ -341,7 +574,7 @@ class ViewerActivity : Base() {
         v.setOnPreparedListener { mp ->
             mp.isLooping = Prefs.loopVideos
             v.seekTo(max(1, if (Prefs.rememberPosition) Prefs.position(f) else 0)) // a frame instead of black
-            if (Prefs.autoplay) startVideo()
+            if (Prefs.autoplay || slideshow) startVideo()
         }
         v.setOnCompletionListener { playOverlay.visibility = View.VISIBLE; Prefs.savePosition(f, 0) }
         v.setOnErrorListener { _, _, _ -> toast("Lecture impossible, essaie « Ouvrir avec »"); true }
@@ -518,7 +751,7 @@ class ViewerActivity : Base() {
             "Définir en tant que" to { openWith(f, Intent.ACTION_ATTACH_DATA, "Définir en tant que") },
             if (isImage) "Afficher sur la carte" to { Images.showOnMap(this, f) } else null,
             if (isImage) "Imprimer" to { Images.print(this, f); Unit } else null,
-            "Diaporama" to ::startSlideshow,
+            if (slideshow) "Arrêter le minuteur" to ::stopSlideshow else "Diaporama" to { startSlideshow() },
             "Paramètres" to { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
         PopupMenu(this, anchor).apply {
@@ -528,14 +761,16 @@ class ViewerActivity : Base() {
         }
     }
 
-    private fun startSlideshow() {
-        slideshow = true
+    private fun startSlideshow(loop: Boolean = false) {
+        slideshow = true; loopSlides = loop
         if (barsVisible) toggleBars()
+        handler.removeCallbacks(nextSlide)
         handler.postDelayed(nextSlide, Prefs.slideSeconds * 1000L)
+        if (video != null) startVideo()
     }
 
     private fun stopSlideshow() {
-        slideshow = false
+        slideshow = false; loopSlides = false
         handler.removeCallbacks(nextSlide)
     }
 
@@ -587,7 +822,7 @@ class ZoomImageView(c: Context) : ImageView(c) {
         }
         override fun onDoubleTap(e: MotionEvent): Boolean {
             ValueAnimator.ofFloat(scale, if (isZoomed) 1f else 2.5f).apply {
-                duration = 200; interpolator = DecelerateInterpolator()
+                duration = 250; interpolator = PathInterpolator(.2f, 0f, 0f, 1f)
                 addUpdateListener { zoomTo(it.animatedValue as Float, e.x, e.y) }
             }.start()
             return true

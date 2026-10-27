@@ -3,4 +3,11 @@
         <item name="android:colorAccent">#f57c00</item>
         <item name="android:windowBackground">#ff1b1b1b</item>
     </style>
+
+    <!-- See-through, so the picture can grow out of its thumbnail and shrink back into it over the grid -->
+    <style name="Viewer" parent="Theme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>

@@ -2,6 +2,7 @@ package com.iurika.galleryflows
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.RectF
 import android.os.Environment
 import android.provider.MediaStore
 import org.json.JSONObject
@@ -61,7 +62,8 @@ object Prefs {
     var tapSides by bool(false)
     var swipeDownClose by bool(true)
     var showDetails by bool(false)
-    var slideSeconds by int(3)
+    var slideSeconds by int(3) // slideshow and shuffle timer
+    var shuffleSub by bool(true) // shuffle takes the subfolders too
     // security
     var appLock by bool(false)
     var lockHidden by bool(false)
@@ -197,16 +199,20 @@ object Scan {
     }
 
     /** Media whose name contains [q], anywhere below [dirs]. */
-    fun search(dirs: List<File>, q: String): List<File> {
+    fun search(dirs: List<File>, q: String) = sortFiles(collect(dirs, 5000) { it.name.contains(q, ignoreCase = true) })
+
+    /** Every shown media below [dirs] (unsorted), up to [max]. */
+    fun collect(dirs: List<File>, max: Int = 50_000, keep: (File) -> Boolean = { true }): List<File> {
         val out = LinkedHashSet<File>()
         fun walk(d: File, depth: Int) {
-            if (depth > 32 || out.size >= 5000) return
+            if (depth > 32 || out.size >= max) return
+            if (!Prefs.showHidden && hasNomedia(d)) return
             val (sub, media) = children(d)
-            media.filterTo(out) { it.name.contains(q, ignoreCase = true) }
+            media.filterTo(out, keep)
             sub.forEach { walk(it, depth + 1) }
         }
         dirs.forEach { walk(it, 0) }
-        return sortFiles(out.toList())
+        return out.toList()
     }
 
     fun sortFiles(files: List<File>) = order(files, File::getName, File::lastModified, File::length, taken = {
@@ -252,6 +258,7 @@ object Scan {
 /** Hands the viewer its list without squeezing thousands of paths through an Intent. */
 object Session {
     var items: List<File> = emptyList()
+    var locate: ((File) -> RectF?)? = null // where the browser shows this file's thumbnail, for the viewer's way back
     var dirty = false // a file changed in the viewer: the browser must rescan
     var edited: File? = null // the editor saved this file: the viewer shows it on return
 }
