@@ -10,4 +10,14 @@
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowAnimationStyle">@null</item>
     </style>
+
+    <!-- "Personnaliser les couleurs": laid over either theme at runtime, same order as ACCENTS in Ui.kt -->
+    <style name="Accent0"><item name="android:colorAccent">#f57c00</item></style>
+    <style name="Accent1"><item name="android:colorAccent">#3d8bfd</item></style>
+    <style name="Accent2"><item name="android:colorAccent">#43a047</item></style>
+    <style name="Accent3"><item name="android:colorAccent">#9c5cf0</item></style>
+    <style name="Accent4"><item name="android:colorAccent">#e8457c</item></style>
+    <style name="Accent5"><item name="android:colorAccent">#e53935</item></style>
+    <style name="Accent6"><item name="android:colorAccent">#14a89a</item></style>
+    <style name="Accent7"><item name="android:colorAccent">#f2b705</item></style>
 </resources>

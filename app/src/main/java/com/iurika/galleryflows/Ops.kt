@@ -42,7 +42,7 @@ object Ops {
         }
         if (move) cleanEmpty(files)
         rescan(c, changed)
-        return "${if (move) "Déplacé" else "Copié"} : $ok/${files.size}"
+        return t(if (move) "Déplacé : %d/%d" else "Copié : %d/%d", ok, files.size)
     }
 
     /** To the trash when it's on (and the file isn't already there), otherwise gone for good. */
@@ -55,7 +55,7 @@ object Ops {
         Prefs.favorites = Prefs.favorites - gone.map { it.path }.toSet()
         cleanEmpty(gone)
         rescan(c, gone.map { it.path })
-        return "${if (toTrash) "Mis à la corbeille" else "Supprimé"} : ${gone.size}/${files.size}"
+        return t(if (toTrash) "Mis à la corbeille : %d/%d" else "Supprimé : %d/%d", gone.size, files.size)
     }
 
     fun rename(c: Context, f: File, name: String): File? {
@@ -120,7 +120,7 @@ object Trash {
             Ops.moveFile(f, target).also { if (it) { forget(f); changed += target.path } }
         }
         Ops.rescan(c, changed)
-        return "Restauré : $ok/${files.size}"
+        return t("Restauré : %d/%d", ok, files.size)
     }
 
     fun empty(c: Context) = Ops.delete(c, items(), permanent = true)

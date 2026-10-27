@@ -13,6 +13,12 @@ import android.animation.Animator
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.drawable.BitmapDrawable
+import android.view.WindowManager
+import android.webkit.WebView
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
@@ -56,6 +62,8 @@ import java.text.DateFormat
 import java.util.Date
 import kotlin.concurrent.thread
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -75,7 +83,9 @@ class ViewerActivity : Base() {
     private lateinit var seek: SeekBar
     private lateinit var timeNow: TextView
     private lateinit var timeEnd: TextView
-    private lateinit var star: ImageView
+    private var star: ImageView? = null // the favorite button, when the bar has it
+    private var brightFrom = 0f // screen brightness when a brightness drag started
+    private var opaqueNow = false // turned opaque to force an orientation: no grid behind to shrink back into
     private var image: ZoomImageView? = null
     private var video: VideoView? = null
     private var videoFile: File? = null
@@ -93,7 +103,7 @@ class ViewerActivity : Base() {
     }
 
     private lateinit var root: FrameLayout
-    private val bg = ColorDrawable(0xff000000.toInt())
+    private val bg by lazy { ColorDrawable(if (Prefs.blackBg) 0xff000000.toInt() else BG) }
     private val standard = PathInterpolator(.2f, 0f, 0f, 1f) // Material standard easing
     private var animating = false
     private var closing = false
@@ -103,7 +113,7 @@ class ViewerActivity : Base() {
     private var neighbor: ImageView? = null // the page coming in beside the current one during a swipe
     private val gap get() = dp(16)
 
-    // Touch: 0 undecided, 1 swiping pages, 2 dragging down to close, -1 left to the views (zoom, pan, pinch, bars)
+    // Touch: 0 undecided, 1 swiping pages, 2 dragging down to close, 3 brightness, -1 left to the views (zoom, pan, pinch, bars)
     private var dragMode = 0
     private var downX = 0f
     private var downY = 0f
@@ -151,7 +161,12 @@ class ViewerActivity : Base() {
     }
 
     private fun buildUi() {
-        if (Prefs.maxBrightness) window.attributes = window.attributes.apply { screenBrightness = 1f }
+        window.attributes = window.attributes.apply {
+            if (Prefs.maxBrightness) screenBrightness = 1f
+            // "Afficher une encoche": pictures keep clear of the camera cutout; off, they use the whole screen
+            layoutInDisplayCutoutMode = if (Prefs.showNotch) WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
         content = FrameLayout(this)
         title = TextView(this).apply { setTextColor(WHITE); textSize = 18f; setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
         topBar = LinearLayout(this).apply {
@@ -160,18 +175,14 @@ class ViewerActivity : Base() {
             addView(title, LP(0, -2, 1f))
             addView(icon(R.drawable.ic_more) { menu(it) })
         }
-        star = icon(R.drawable.ic_star) { toggleFavorite() }
         val buttons = if (trashMode) listOf(
             icon(R.drawable.ic_restore) { restore() },
             icon(R.drawable.ic_delete) { delete() },
             icon(R.drawable.ic_info) { info() },
-        ) else listOf(
-            star,
-            icon(R.drawable.ic_edit) { edit() },
-            icon(R.drawable.ic_share) { share(listOf(current())) },
-            icon(R.drawable.ic_delete) { delete() },
-            icon(R.drawable.ic_info) { info() },
-        )
+        ) else if (!Prefs.showActions) emptyList()
+        else Prefs.actions.mapNotNull { k -> VIEWER_ACTIONS.find { it.first == k } }.map { (k, label, res) ->
+            icon(res) { act(k) }.apply { contentDescription = t(label); if (k == "favorite") star = this }
+        }
         timeNow = TextView(this).apply { setTextColor(WHITE); textSize = 13f }
         timeEnd = TextView(this).apply { setTextColor(WHITE); textSize = 13f }
         seek = SeekBar(this).apply {
@@ -194,7 +205,7 @@ class ViewerActivity : Base() {
             orientation = LinearLayout.VERTICAL; background = shade(GradientDrawable.Orientation.BOTTOM_TOP)
             addView(details)
             addView(videoRow)
-            addView(LinearLayout(this@ViewerActivity).apply { buttons.forEach { addView(it, LP(0, dp(56), 1f)) } })
+            if (buttons.isNotEmpty()) addView(LinearLayout(this@ViewerActivity).apply { buttons.forEach { addView(it, LP(0, dp(56), 1f)) } })
         }
         hint = TextView(this).apply {
             setTextColor(WHITE); textSize = 16f; background = rounded(0xaa000000.toInt(), 12); setPadding(dp(16), dp(10), dp(16), dp(10))
@@ -263,8 +274,11 @@ class ViewerActivity : Base() {
             val dx = e.rawX - downX
             val dy = e.rawY - downY
             val videoOwnsVertical = video != null && Prefs.videoGestures
+            val vertical = abs(dy) > slop && abs(dy) > abs(dx)
             if (abs(dx) > slop && abs(dx) > abs(dy)) dragMode = 1
-            else if (dy > slop && dy > abs(dx) && Prefs.swipeDownClose && !videoOwnsVertical) dragMode = 2
+            // brightness on the left half; down on the right half still closes
+            else if (vertical && Prefs.imageBrightness && video == null && downX < root.width / 2f) { dragMode = 3; brightFrom = brightness() }
+            else if (vertical && dy > 0 && Prefs.swipeDownClose && !videoOwnsVertical) dragMode = 2
             if (dragMode > 0) {
                 downX = e.rawX; downY = e.rawY // start from here, no jump of a slop
                 val cancel = MotionEvent.obtain(e).apply { action = MotionEvent.ACTION_CANCEL }
@@ -276,11 +290,12 @@ class ViewerActivity : Base() {
         val dx = e.rawX - downX
         val dy = e.rawY - downY
         when (e.actionMasked) {
-            MotionEvent.ACTION_MOVE -> if (dragMode == 1) dragPage(dx) else dragDown(dx, dy)
+            MotionEvent.ACTION_MOVE -> when (dragMode) { 1 -> dragPage(dx); 2 -> dragDown(dx, dy); else -> setBrightness(brightFrom - dy / root.height) }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val v = velocity!!.apply { computeCurrentVelocity(1000) }
                 val fast = dp(600)
-                if (dragMode == 1) {
+                if (dragMode == 3) Unit
+                else if (dragMode == 1) {
                     val delta = if (dx < 0) 1 else -1
                     val flung = abs(v.xVelocity) > fast && (v.xVelocity < 0) == (dx < 0)
                     settlePage(if (neighbor != null && (abs(dx) > root.width / 3 || flung)) delta else 0)
@@ -438,8 +453,8 @@ class ViewerActivity : Base() {
         topBar.animate().alpha(0f).setDuration(100).start(); bottomBar.animate().alpha(0f).setDuration(100).start()
         val f = current()
         val bmp = Thumbs.cached(f)
-        // only back into the grid it came from, not into a browser left open behind an "Open with"
-        val target = Session.locate?.takeIf { intent.data == null }?.invoke(f)?.let(::windowToRoot)
+        // only back into the grid it came from, not into a browser left open behind an "Open with", nor one hidden behind an opaque window
+        val target = Session.locate?.takeIf { intent.data == null && !opaqueNow }?.invoke(f)?.let(::windowToRoot)
         if (bmp != null && target != null && image?.isZoomed != true && root.width > 0) {
             val fit = fitted(bmp)
             // where the picture is right now, dragged or not: content scales about its center and follows the finger
@@ -481,9 +496,14 @@ class ViewerActivity : Base() {
         handler.removeCallbacks(tick)
         val f = current()
         title.text = f.name
-        star.setColorFilter(if (f.path in Prefs.favorites) ACCENT else WHITE)
+        renderStar()
         renderDetails(f)
-        if (kindOf(f.name) == Kind.VIDEO && !Prefs.externalPlayer) showVideo(f) else showImage(f)
+        when {
+            kindOf(f.name) == Kind.VIDEO && !Prefs.externalPlayer -> showVideo(f)
+            kindOf(f.name) == Kind.SVG -> showSvg(f)
+            else -> showImage(f)
+        }
+        if (Prefs.orientation != 3) orient(0, 0)
         if (slideshow) { handler.removeCallbacks(nextSlide); handler.postDelayed(nextSlide, Prefs.slideSeconds * 1000L) }
         preload()
     }
@@ -492,7 +512,7 @@ class ViewerActivity : Base() {
         val around = (pos - 1..pos + 1).filter { it in items.indices }.map { items[it] }
         previews.keys.retainAll(around.map { it.path }.toSet())
         val side = max(root.width, root.height).takeIf { it > 0 } ?: 2400
-        around.filter { it.path !in previews && kindOf(it.name) != Kind.VIDEO }.forEach { f ->
+        around.filter { it.path !in previews && kindOf(it.name) != Kind.VIDEO && kindOf(it.name) != Kind.SVG }.forEach { f ->
             loader.execute {
                 val b = runCatching { Images.decode(f, side) }.getOrNull() ?: return@execute
                 runOnUiThread {
@@ -513,12 +533,13 @@ class ViewerActivity : Base() {
         details.text = listOfNotNull(
             o.outWidth.takeIf { it > 0 }?.let { "$it × ${o.outHeight}" },
             Formatter.formatShortFileSize(this, f.length()),
-            DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(f.lastModified())),
+            formatDate(f.lastModified()),
         ).joinToString("  ·  ")
     }
 
     private fun showImage(f: File) {
         val v = ZoomImageView(this).apply { onTap = ::tapped }
+        if (kindOf(f.name) != Kind.GIF) v.source = f
         image = v
         content.addView(v, FrameLayout.LayoutParams(-1, -1))
         (previews[f.path] ?: Thumbs.cached(f))?.let(v::setImageBitmap) // instant preview while the full image decodes
@@ -527,23 +548,67 @@ class ViewerActivity : Base() {
                 val poster = runCatching { ThumbnailUtils.createVideoThumbnail(f, Size(1280, 1280), null) }.getOrNull()
                 runOnUiThread { if (image === v && poster != null) v.setImageBitmap(poster) }
             }
-            content.addView(playButton { openWith(f, Intent.ACTION_VIEW, "Lire avec") }, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
+            content.addView(playButton { openWith(f, Intent.ACTION_VIEW, t("Lire avec")) }, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
             return
         }
         thread {
+            val size = Images.uprightSize(f)
             val d: Drawable? = runCatching {
                 ImageDecoder.decodeDrawable(ImageDecoder.createSource(f)) { dec, info, _ ->
-                    // keep the longest side under 4096 px: bigger bitmaps can't be drawn
+                    // keep the longest side under 4096 px: bigger bitmaps can't be drawn (zooming in brings sharp tiles)
                     val side = max(info.size.width, info.size.height)
                     dec.setTargetSampleSize((side + 4095) / 4096)
                 }
             }.getOrNull()
+                // a RAW the system can't decode: its embedded preview
+                ?: runCatching { ExifInterface(f.path).thumbnailBitmap?.let { BitmapDrawable(resources, it) } }.getOrNull()
             runOnUiThread {
                 if (image !== v) return@runOnUiThread
-                if (d == null) toast("Impossible d'ouvrir ${f.name}")
+                v.fullW = size.first; v.fullH = size.second
+                if (d == null) toast(t("Impossible d'ouvrir %s", f.name))
                 else { v.setImageDrawable(d); (d as? AnimatedImageDrawable)?.start() }
+                if (Prefs.orientation == 3) orient(size.first, size.second)
             }
         }
+    }
+
+    // No SVG decoder on Android: the system WebView draws it, with its own pinch zoom
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun showSvg(f: File) {
+        val taps = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { tapped(e.x); return true }
+        })
+        content.addView(WebView(this).apply {
+            setBackgroundColor(0)
+            settings.allowFileAccess = true
+            settings.builtInZoomControls = true; settings.displayZoomControls = false
+            val page = "<html><body style='margin:0;height:100vh;display:flex;align-items:center;justify-content:center'>" +
+                "<img src='${Uri.fromFile(f)}' style='max-width:100%;max-height:100%'></body></html>"
+            loadDataWithBaseURL("file:///", page, "text/html", "utf-8", null)
+            setOnTouchListener { _, e -> taps.onTouchEvent(e); false }
+        }, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    /** "Orientation": [w]×[h] is the media's upright size, for "selon le média". */
+    private fun orient(w: Int, h: Int) {
+        val wanted = when (Prefs.orientation) {
+            1 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            2 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            3 -> if (w <= 0 || h <= 0) return else if (w > h) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (requestedOrientation == wanted) return
+        // a see-through window takes the orientation of the one behind it: forcing one needs an opaque window
+        if (wanted != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED && !opaqueNow) opaqueNow = setTranslucent(false)
+        requestedOrientation = wanted
+    }
+
+    private fun orientationDialog() {
+        val labels = listOf("Utiliser l'orientation du système", "Forcer le portrait", "Forcer le paysage", "Selon l'orientation du média")
+        AlertDialog.Builder(this).setTitle(t("Orientation"))
+            .setSingleChoiceItems(labels.map { t(it) }.toTypedArray(), Prefs.orientation) { d, i ->
+                d.dismiss(); Prefs.orientation = i; show()
+            }.show()
     }
 
     private fun tapped(x: Float) {
@@ -573,11 +638,12 @@ class ViewerActivity : Base() {
         playOverlay = playButton { startVideo(); if (barsVisible) toggleBars() }
         v.setOnPreparedListener { mp ->
             mp.isLooping = Prefs.loopVideos
+            if (Prefs.orientation == 3) orient(mp.videoWidth, mp.videoHeight)
             v.seekTo(max(1, if (Prefs.rememberPosition) Prefs.position(f) else 0)) // a frame instead of black
             if (Prefs.autoplay || slideshow) startVideo()
         }
         v.setOnCompletionListener { playOverlay.visibility = View.VISIBLE; Prefs.savePosition(f, 0) }
-        v.setOnErrorListener { _, _, _ -> toast("Lecture impossible, essaie « Ouvrir avec »"); true }
+        v.setOnErrorListener { _, _, _ -> toast(t("Lecture impossible, essaie « Ouvrir avec »")); true }
         v.setVideoPath(f.path)
         content.addView(v, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
         content.addView(gestureLayer(), FrameLayout.LayoutParams(-1, -1))
@@ -599,13 +665,8 @@ class ViewerActivity : Base() {
             }
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
                 if (!Prefs.videoGestures || e1 == null || abs(dy) < abs(dx)) return false
-                if (e1.x < width / 2) {
-                    val attrs = window.attributes
-                    val now = (if (attrs.screenBrightness < 0) 0.5f else attrs.screenBrightness) + dy / height
-                    attrs.screenBrightness = now.coerceIn(0.01f, 1f)
-                    window.attributes = attrs
-                    flash("Luminosité ${(attrs.screenBrightness * 100).roundToInt()} %")
-                } else {
+                if (e1.x < width / 2) setBrightness(brightness() + dy / height)
+                else {
                     pending += dy
                     val stepPx = dp(30)
                     while (abs(pending) >= stepPx) {
@@ -613,12 +674,19 @@ class ViewerActivity : Base() {
                         pending -= if (pending > 0) stepPx else -stepPx
                     }
                     val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                    flash("Volume ${audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max} %")
+                    flash(t("Volume %d %%", audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max))
                 }
                 return true
             }
         })
         setOnTouchListener { _, e -> detector.onTouchEvent(e) }
+    }
+
+    private fun brightness() = window.attributes.screenBrightness.let { if (it < 0) 0.5f else it }
+
+    private fun setBrightness(value: Float) {
+        window.attributes = window.attributes.apply { screenBrightness = value.coerceIn(0.01f, 1f) }
+        flash(t("Luminosité %d %%", (brightness() * 100).roundToInt()))
     }
 
     private fun flash(text: String) {
@@ -646,13 +714,20 @@ class ViewerActivity : Base() {
     private fun toggleFavorite() {
         val p = current().path
         Prefs.favorites = if (p in Prefs.favorites) Prefs.favorites - p else Prefs.favorites + p
-        star.setColorFilter(if (p in Prefs.favorites) ACCENT else WHITE)
+        renderStar()
+        star?.animate()?.scaleX(1.25f)?.scaleY(1.25f)?.setDuration(90)?.withEndAction { star?.animate()?.scaleX(1f)?.scaleY(1f)?.setDuration(140)?.start() }?.start()
         Session.dirty = true
+    }
+
+    private fun renderStar() {
+        val on = current().path in Prefs.favorites
+        star?.setImageResource(if (on) R.drawable.ic_star_fill else R.drawable.ic_star)
+        star?.setColorFilter(if (on) ACCENT else WHITE)
     }
 
     private fun edit() {
         val f = current()
-        if (kindOf(f.name) == Kind.IMAGE) startActivity(Intent(this, EditorActivity::class.java).putExtra("path", f.path))
+        if (isPhoto(f.name)) startActivity(Intent(this, EditorActivity::class.java).putExtra("path", f.path))
         else openWith(f, Intent.ACTION_EDIT, "Modifier avec")
     }
 
@@ -670,7 +745,7 @@ class ViewerActivity : Base() {
         val permanent = trashMode || !Prefs.useTrash
         val run = { guardOps { Ops.delete(this, listOf(f), permanent); if (f.exists()) toast("Suppression impossible") else removeCurrent() } }
         if (Prefs.skipDeleteConfirm) run()
-        else confirm(if (permanent) "Supprimer définitivement ${f.name} ?" else "Mettre ${f.name} à la corbeille ?", run)
+        else confirm(t(if (permanent) "Supprimer définitivement %s ?" else "Mettre %s à la corbeille ?", f.name), run)
     }
 
     private fun restore() {
@@ -724,7 +799,7 @@ class ViewerActivity : Base() {
                     runOnUiThread {
                         if (out == null) return@runOnUiThread toast("Impossible de redimensionner")
                         Ops.rescan(this, listOf(out.path)); Session.dirty = true
-                        items.add(pos + 1, out); toast("Enregistré : ${out.name}")
+                        items.add(pos + 1, out); toast(t("Enregistré : %s", out.name))
                     }
                 }
                 Unit
@@ -732,28 +807,56 @@ class ViewerActivity : Base() {
         })
     }
 
+    /** Runs one of VIEWER_ACTIONS. */
+    private fun act(key: String) {
+        val f = current()
+        when (key) {
+            "favorite" -> toggleFavorite()
+            "edit" -> edit()
+            "share" -> share(listOf(f))
+            "delete" -> delete()
+            "info" -> info()
+            "rotate" -> rotate()
+            "slideshow" -> if (slideshow) stopSlideshow() else startSlideshow()
+            "copy" -> transfer(move = false)
+            "move" -> transfer(move = true)
+            "rename" -> ask(t("Renommer"), f.name, ::rename)
+            "hide" -> if (Ops.rename(this, f, ".${f.name}") != null) removeCurrent() else toast(t("Impossible de cacher"))
+            "open" -> openWith(f, Intent.ACTION_VIEW, t("Ouvrir avec"))
+            "setas" -> openWith(f, Intent.ACTION_ATTACH_DATA, t("Définir en tant que"))
+            "map" -> Images.showOnMap(this, f)
+            "print" -> Images.print(this, f)
+            "resize" -> resize()
+            "shortcut" -> pinShortcut(f.path, f.name, Thumbs.cached(f),
+                Intent(this, ViewerActivity::class.java).setAction(Intent.ACTION_VIEW).setData(Files.uri(f)))
+            "orientation" -> orientationDialog()
+        }
+    }
+
+    // ponytail: map, print, rotate and resize are for photos only; the rest works on everything
+    private fun applies(key: String, f: File) = key !in setOf("rotate", "resize", "map", "print") || kindOf(f.name).let { it != Kind.VIDEO && it != Kind.SVG }
+
     private fun menu(anchor: View) {
         val f = current()
-        val isImage = kindOf(f.name) != Kind.VIDEO
         val actions = if (trashMode) listOf<Pair<String, () -> Unit>>(
-            "Restaurer" to ::restore,
-            "Supprimer définitivement" to ::delete,
-            "Ouvrir avec" to { openWith(f, Intent.ACTION_VIEW, "Ouvrir avec") },
-        ) else listOfNotNull<Pair<String, () -> Unit>>(
-            "Copier vers" to { transfer(move = false) },
-            "Déplacer vers" to { transfer(move = true) },
-            "Renommer" to { ask("Renommer", f.name, ::rename) },
-            if (isImage) "Pivoter" to ::rotate else null,
-            if (isImage) "Redimensionner" to ::resize else null,
-            "Modifier avec…" to { openWith(f, Intent.ACTION_EDIT, "Modifier avec") },
-            "Cacher" to { if (Ops.rename(this, f, ".${f.name}") != null) removeCurrent() else toast("Impossible de cacher") },
-            "Ouvrir avec" to { openWith(f, Intent.ACTION_VIEW, "Ouvrir avec") },
-            "Définir en tant que" to { openWith(f, Intent.ACTION_ATTACH_DATA, "Définir en tant que") },
-            if (isImage) "Afficher sur la carte" to { Images.showOnMap(this, f) } else null,
-            if (isImage) "Imprimer" to { Images.print(this, f); Unit } else null,
-            if (slideshow) "Arrêter le minuteur" to ::stopSlideshow else "Diaporama" to { startSlideshow() },
-            "Paramètres" to { startActivity(Intent(this, SettingsActivity::class.java)) },
-        )
+            t("Restaurer") to ::restore,
+            t("Supprimer définitivement") to ::delete,
+            t("Ouvrir avec") to { openWith(f, Intent.ACTION_VIEW, t("Ouvrir avec")) },
+        ) else {
+            // what the bottom bar doesn't already show
+            val inBar = if (Prefs.showActions) Prefs.actions.toSet() else emptySet()
+            VIEWER_ACTIONS.filter { (k) -> k !in inBar && applies(k, f) }.map { (k, label) ->
+                val text = when {
+                    k == "favorite" -> if (f.path in Prefs.favorites) "Retirer des favoris" else "Ajouter aux favoris"
+                    k == "slideshow" && slideshow -> "Arrêter le minuteur"
+                    else -> label
+                }
+                t(text) to { act(k) }
+            } + listOf(
+                t("Modifier avec…") to { openWith(f, Intent.ACTION_EDIT, t("Modifier avec")) },
+                t("Paramètres") to { startActivity(Intent(this, SettingsActivity::class.java)) },
+            )
+        }
         PopupMenu(this, anchor).apply {
             actions.forEachIndexed { i, a -> menu.add(0, i, i, a.first) }
             setOnMenuItemClickListener { actions[it.itemId].second(); true }
@@ -777,10 +880,10 @@ class ViewerActivity : Base() {
     private fun info() {
         val f = current()
         val lines = mutableListOf(
-            "Nom : ${f.name}",
-            "Dossier : ${Trash.originalOf(f)?.let { File(it).parent } ?: f.parent}",
-            "Taille : ${Formatter.formatFileSize(this, f.length())}",
-            "Modifié : ${DateFormat.getDateTimeInstance().format(Date(f.lastModified()))}",
+            t("Nom : %s", f.name),
+            t("Dossier : %s", Trash.originalOf(f)?.let { File(it).parent } ?: f.parent),
+            t("Taille : %s", Formatter.formatFileSize(this, f.length())),
+            t("Modifié : %s", formatDate(f.lastModified())),
         )
         runCatching {
             if (kindOf(f.name) == Kind.VIDEO) MediaMetadataRetriever().use { r ->
@@ -788,29 +891,45 @@ class ViewerActivity : Base() {
                 val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
                 val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
                 val ms = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
-                lines += "Résolution : $w × $h"
-                lines += "Durée : ${DateUtils.formatElapsedTime(ms / 1000)}"
+                lines += t("Résolution : %s", "$w × $h")
+                lines += t("Durée : %s", DateUtils.formatElapsedTime(ms / 1000))
             } else {
                 val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(f.path, o)
-                if (o.outWidth > 0) lines += "Résolution : ${o.outWidth} × ${o.outHeight}"
+                if (o.outWidth > 0) lines += t("Résolution : %s", "${o.outWidth} × ${o.outHeight}")
                 val e = ExifInterface(f.path)
-                e.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)?.let { lines += "Prise de vue : $it" }
+                e.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)?.let { lines += t("Prise de vue : %s", it) }
                 listOfNotNull(e.getAttribute(ExifInterface.TAG_MAKE), e.getAttribute(ExifInterface.TAG_MODEL))
-                    .joinToString(" ").takeIf { it.isNotBlank() }?.let { lines += "Appareil : $it" }
+                    .joinToString(" ").takeIf { it.isNotBlank() }?.let { lines += t("Appareil : %s", it) }
                 Images.latLong(f)?.let { lines += "GPS : %.5f, %.5f".format(it[0], it[1]) }
             }
         }
-        AlertDialog.Builder(this).setTitle("Propriétés").setMessage(lines.joinToString("\n\n")).setPositiveButton("OK", null).show()
+        AlertDialog.Builder(this).setTitle(t("Propriétés")).setMessage(lines.joinToString("\n\n")).setPositiveButton("OK", null).show()
     }
 }
 
-/** ImageView with pinch zoom, double-tap zoom and panning. */
+/**
+ * ImageView with pinch zoom, double-tap zoom, panning and two-finger rotation. Zoomed past what the decoded picture holds,
+ * it decodes the visible part of [source] at full resolution and draws that sharp tile over it.
+ */
 class ZoomImageView(c: Context) : ImageView(c) {
     var onTap: (Float) -> Unit = {}
+    var source: File? = null
+    var fullW = 0 // upright size of the file itself, the drawable may be downsampled
+    var fullH = 0
     private val m = Matrix()
     private var scale = 1f // relative to "fit screen"
+    private var turned = 0f // degrees, from the rotation gesture
     val isZoomed get() = scale > 1.01f
+
+    private val sideways get() = (turned / 90).roundToInt() % 2 != 0
+    // one file pixel per screen pixel, as a multiple of "fit screen"
+    private val native: Float get() {
+        if (fullW <= 0 || width == 0) return 1f
+        val (w, h) = if (sideways) fullH to fullW else fullW to fullH
+        return 1 / min(width / w.toFloat(), height / h.toFloat())
+    }
+    private val maxScale get() = if (Prefs.advancedZoom) max(8f, native * 4) else 4f
 
     private val scaler = ScaleGestureDetector(c, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean { zoomTo(scale * d.scaleFactor, d.focusX, d.focusY); return true }
@@ -821,7 +940,12 @@ class ZoomImageView(c: Context) : ImageView(c) {
             return true
         }
         override fun onDoubleTap(e: MotionEvent): Boolean {
-            ValueAnimator.ofFloat(scale, if (isZoomed) 1f else 2.5f).apply {
+            val target = when {
+                isZoomed -> 1f
+                Prefs.oneToOne && native > 1.2f -> native
+                else -> 2.5f
+            }
+            ValueAnimator.ofFloat(scale, target).apply {
                 duration = 250; interpolator = PathInterpolator(.2f, 0f, 0f, 1f)
                 addUpdateListener { zoomTo(it.animatedValue as Float, e.x, e.y) }
             }.start()
@@ -832,28 +956,70 @@ class ZoomImageView(c: Context) : ImageView(c) {
 
     init { scaleType = ScaleType.MATRIX }
 
+    // ---- rotation gesture: follows the fingers past 15°, then settles on the nearest quarter turn ----
+
+    private var lastAngle = Float.NaN
+    private var spin = 0f
+    private var rotating = false
+
+    private fun rotateGesture(e: MotionEvent) {
+        if (e.pointerCount < 2 || e.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+            if (rotating) settleTurn()
+            lastAngle = Float.NaN; spin = 0f
+            return
+        }
+        val a = Math.toDegrees(atan2((e.getY(1) - e.getY(0)).toDouble(), (e.getX(1) - e.getX(0)).toDouble())).toFloat()
+        if (!lastAngle.isNaN()) {
+            var d = a - lastAngle
+            if (d > 180) d -= 360 else if (d < -180) d += 360
+            spin += d
+            if (!rotating && abs(spin) > 15) { rotating = true; d = spin }
+            if (rotating) { m.postRotate(d, width / 2f, height / 2f); turned += d; imageMatrix = m }
+        }
+        lastAngle = a
+    }
+
+    private fun settleTurn() {
+        rotating = false
+        val target = (turned / 90).roundToInt() * 90f
+        var done = turned
+        ValueAnimator.ofFloat(turned, target).apply {
+            duration = 200; interpolator = PathInterpolator(.2f, 0f, 0f, 1f)
+            addUpdateListener { val v = it.animatedValue as Float; m.postRotate(v - done, width / 2f, height / 2f); done = v; imageMatrix = m }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(a: Animator) { turned = target % 360; if (isZoomed) fix() else reset() }
+            })
+        }.start()
+    }
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
         scaler.onTouchEvent(e)
         gestures.onTouchEvent(e)
+        if (Prefs.gestureRotate) rotateGesture(e)
         return true
     }
 
-    override fun setImageDrawable(d: Drawable?) { super.setImageDrawable(d); reset() }
+    override fun setImageDrawable(d: Drawable?) { super.setImageDrawable(d); tile = null; reset() }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) { super.onSizeChanged(w, h, ow, oh); reset() }
 
     private fun reset() {
         val d = drawable ?: return
         if (width == 0 || d.intrinsicWidth <= 0) return
-        val s = min(width / d.intrinsicWidth.toFloat(), height / d.intrinsicHeight.toFloat())
-        m.setScale(s, s)
-        m.postTranslate((width - d.intrinsicWidth * s) / 2, (height - d.intrinsicHeight * s) / 2)
+        val iw = d.intrinsicWidth.toFloat(); val ih = d.intrinsicHeight.toFloat()
+        val (w, h) = if (sideways) ih to iw else iw to ih
+        val s = min(width / w, height / h)
+        m.setRotate(turned, iw / 2, ih / 2)
+        m.postScale(s, s)
+        val r = RectF(0f, 0f, iw, ih).also(m::mapRect)
+        m.postTranslate(width / 2f - r.centerX(), height / 2f - r.centerY())
         scale = 1f
         imageMatrix = m
+        sharpenLater()
     }
 
     private fun zoomTo(target: Float, x: Float, y: Float) {
-        val f = target.coerceIn(1f, 8f) / scale
+        val f = target.coerceIn(1f, maxScale) / scale
         scale *= f
         m.postScale(f, f, x, y)
         fix()
@@ -872,5 +1038,47 @@ class ZoomImageView(c: Context) : ImageView(c) {
         }
         m.postTranslate(shift(r.left, r.right, width.toFloat()), shift(r.top, r.bottom, height.toFloat()))
         imageMatrix = m
+        sharpenLater()
     }
+
+    // ---- sharp tile ----
+
+    private var tile: Bitmap? = null
+    private val tileRect = RectF() // where it goes, in drawable pixels
+    private var tileJob = 0
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val sharpen = Runnable { requestTile() }
+
+    private fun sharpenLater() { removeCallbacks(sharpen); postDelayed(sharpen, 180) }
+
+    private fun requestTile() {
+        val f = source ?: return
+        val d = drawable ?: return
+        if (!Prefs.bestQuality || fullW <= 0 || width == 0) return
+        val k = fullW.toFloat() / d.intrinsicWidth // file px per drawable px; both upright, the gesture turn is in m
+        val v = FloatArray(9).also(m::getValues)
+        val onScreen = hypot(v[Matrix.MSCALE_X], v[Matrix.MSKEW_Y]) // screen px per drawable px
+        if (k < 1.3f || onScreen <= 1.05f) { tile = null; invalidate(); return } // the drawable already holds enough pixels
+        val visible = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        Matrix().also { m.invert(it) }.mapRect(visible)
+        if (!visible.intersect(0f, 0f, d.intrinsicWidth.toFloat(), d.intrinsicHeight.toFloat())) return
+        var sample = 1
+        while (onScreen / k * sample * 2 <= 1f) sample *= 2 // no more file pixels than screen pixels
+        val job = ++tileJob
+        val area = RectF(visible)
+        TILES.execute {
+            val bmp = runCatching { Images.region(f, RectF(area.left * k, area.top * k, area.right * k, area.bottom * k), sample) }.getOrNull()
+            post { if (job == tileJob && bmp != null) { tile = bmp; tileRect.set(area); invalidate() } }
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val t = tile ?: return
+        canvas.save(); canvas.concat(m)
+        canvas.drawBitmap(t, null, tileRect, paint)
+        canvas.restore()
+    }
+
+    private companion object { val TILES: java.util.concurrent.ExecutorService = Executors.newSingleThreadExecutor() }
 }

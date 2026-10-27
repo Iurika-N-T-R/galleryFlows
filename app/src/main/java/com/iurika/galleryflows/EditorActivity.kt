@@ -37,7 +37,7 @@ class EditorActivity : Base() {
         super.onCreate(savedInstanceState)
         file = File(intent.getStringExtra("path") ?: return finish())
         crop = CropView(this)
-        val title = TextView(this).apply { text = "Modifier"; setTextColor(WHITE); textSize = 18f }
+        val title = TextView(this).apply { text = t("Modifier"); setTextColor(WHITE); textSize = 18f }
         val top = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(icon(R.drawable.ic_close) { finish() })
@@ -47,7 +47,7 @@ class EditorActivity : Base() {
         val ratios = LinearLayout(this).apply {
             listOf("Libre" to 0f, "Original" to -1f, "1:1" to 1f, "4:3" to 4 / 3f, "3:4" to 3 / 4f, "16:9" to 16 / 9f, "9:16" to 9 / 16f).forEach { (label, r) ->
                 addView(TextView(this@EditorActivity).apply {
-                    text = label; setTextColor(WHITE); textSize = 14f; background = rounded(0xff333333.toInt(), 16)
+                    text = t(label); setTextColor(WHITE); textSize = 14f; background = rounded(0xff333333.toInt(), 16)
                     setPadding(dp(14), dp(8), dp(14), dp(8))
                     setOnClickListener { crop.setRatio(if (r < 0) crop.bitmapRatio() else r) }
                 }, LP(-2, -2).apply { marginEnd = dp(8) })
@@ -64,8 +64,8 @@ class EditorActivity : Base() {
         }
         adjustPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; visibility = View.GONE; setPadding(dp(16), 0, dp(16), 0)
-            addView(slider("Luminosité", 100) { brightness = (it - 100).toFloat() })
-            addView(slider("Contraste", 100) { contrast = 0.5f + it / 200f })
+            addView(slider(t("Luminosité"), 100) { brightness = (it - 100).toFloat() })
+            addView(slider(t("Contraste"), 100) { contrast = 0.5f + it / 200f })
             addView(slider("Saturation", 100) { saturation = it / 100f })
         }
         setContentView(LinearLayout(this).apply {
@@ -131,8 +131,8 @@ class EditorActivity : Base() {
             if (Images.writable(file)) "Remplacer l'original" to { save(file) } else null,
             "Enregistrer une copie" to { save(Images.copyTarget(file, "modifié")) },
         )
-        AlertDialog.Builder(this).setTitle("Enregistrer")
-            .setItems(options.map { it.first }.toTypedArray()) { _, i -> options[i].second() }.show()
+        AlertDialog.Builder(this).setTitle(t("Enregistrer"))
+            .setItems(options.map { t(it.first) }.toTypedArray()) { _, i -> options[i].second() }.show()
     }
 
     private fun save(target: File) {
@@ -156,7 +156,7 @@ class EditorActivity : Base() {
                 Ops.rescan(this, listOf(target.path))
                 Session.dirty = true
                 Session.edited = target
-                toast("Enregistré : ${target.name}")
+                toast(t("Enregistré : %s", target.name))
                 finish()
             }
         }

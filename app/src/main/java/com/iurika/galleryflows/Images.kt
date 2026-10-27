@@ -3,6 +3,10 @@ package com.iurika.galleryflows
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.media.ExifInterface
@@ -74,6 +78,36 @@ object Images {
             }
         }
         if (!tmp.renameTo(target)) { tmp.delete(); error("rename") }
+    }
+
+    private fun degrees(f: File) = runCatching { ORIENT_TO_DEG[ExifInterface(f.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)] }.getOrNull() ?: 0
+
+    /** Width and height as shown, EXIF rotation applied; 0 × 0 when unknown. */
+    fun uprightSize(f: File): Pair<Int, Int> {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.path, o)
+        if (o.outWidth <= 0) return 0 to 0
+        return if (degrees(f) % 180 == 90) o.outHeight to o.outWidth else o.outWidth to o.outHeight
+    }
+
+    /** Part [r] of the upright picture (its pixels, EXIF rotation applied), decoded at 1/[sample]. */
+    fun region(f: File, r: RectF, sample: Int): Bitmap? {
+        val deg = degrees(f)
+        @Suppress("DEPRECATION") val dec = BitmapRegionDecoder.newInstance(f.path, false) ?: return null
+        try {
+            val w = dec.width; val h = dec.height
+            // upright rect -> rect in the file's stored pixels
+            val raw = when (deg) {
+                90 -> RectF(r.top, h - r.right, r.bottom, h - r.left)
+                180 -> RectF(w - r.right, h - r.bottom, w - r.left, h - r.top)
+                270 -> RectF(w - r.bottom, r.left, w - r.top, r.right)
+                else -> r
+            }
+            val box = Rect(raw.left.toInt(), raw.top.toInt(), raw.right.roundToInt(), raw.bottom.roundToInt())
+            if (!box.intersect(0, 0, w, h)) return null
+            val bmp = dec.decodeRegion(box, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+            return transform(bmp, deg)
+        } finally { dec.recycle() }
     }
 
     fun transform(bmp: Bitmap, degrees: Int, flipX: Boolean = false, flipY: Boolean = false): Bitmap {

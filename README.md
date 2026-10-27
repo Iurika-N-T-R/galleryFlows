@@ -15,23 +15,26 @@ galleryFlows is an independent app written from scratch, with no dependencies. I
 **Inside a folder**
 - Subfolders come first, as cards with a cover and the number of media in the **whole subtree**; then the folder's own pictures and videos. Folders with no media anywhere below them are left out.
 - The **breadcrumb** (`Galerie › Pictures › Media › Selfgrow`) jumps back to any level; Back goes up one level and keeps your scroll position.
-- **Search** looks through the current folder and everything below it.
+- **Search** looks through the current folder and everything below it, for files or (a setting) for folders.
 - **Long press** a media to select several: share, copy, move, delete.
 - **Long press** a folder: pin it at the top, rename, hide it (`.nomedia`), exclude it, add it to the main screen, or create a home-screen shortcut to it.
 
-**⋮ menu**: sort (name, modified date, date taken, size, random; ascending or descending), filter (images, videos, GIF), grid or list, column count for folders and for media, show hidden files, new folder, settings.
+**⋮ menu**: sort (name, location, dimensions, size, modified date, date taken, random, or custom: long-press items and put them first; ascending or descending), filter (images, videos, GIF, RAW, SVG, portrait shots), grid or list, 1 to 20 columns for folders and for media, show hidden files, new folder, shuffle, settings.
 
 **Viewer**
-- Swipe left / right for the next / previous media, swipe down to close, pinch or double-tap to zoom, tap to show or hide the bars.
-- Bottom bar: favorite, edit, share, delete, properties (size, resolution, date taken, camera, GPS).
-- **⋮**: copy, move, rename, rotate (lossless for JPEG), resize, edit with another app, hide, open with, set as wallpaper / contact photo, show on map, print, slideshow.
+- Swipe left / right for the next / previous media, swipe down to close, pinch or double-tap to zoom (optionally to 1:1), turn with two fingers, tap to show or hide the bars. Zoomed in, the visible part is reloaded at the file's full resolution.
+- Bottom bar: you pick its buttons (favorite, edit, share, delete, properties by default).
+- **⋮**: everything else: copy, move, rename, rotate (lossless for JPEG), resize, edit with another app, hide, open with, set as wallpaper / contact photo, show on map, print, slideshow, home-screen shortcut, orientation (system, portrait, landscape, or following the media).
+- RAW photos show their embedded preview when Android can't decode them; SVG drawings are rendered by the system WebView.
 - **Videos**: play / pause, seek bar, resume where you stopped, loop and autoplay options; drag up / down on the left half for brightness, on the right half for volume.
 
 **Editor**: crop (free, original, 1:1, 4:3, 3:4, 16:9, 9:16), rotate, flip, brightness / contrast / saturation. Replace the original or save a copy; the date taken and GPS position are kept.
 
 **Trash**: deleted media go to a hidden trash folder on their own storage (so deleting a large video is instant). Restore puts them back where they were; anything older than 30 days is removed for good.
 
-**Settings**: thumbnails (square crop, rounded folders), videos, fullscreen (max brightness, auto-hide, tap the sides to change media, swipe down to close, details overlay, slideshow speed), security (lock the app, hidden items, or delete / move operations behind your fingerprint, face or PIN), file operations, trash, thumbnail cache, export / import of all settings as JSON.
+**Settings**: accent and background colors, English instead of French, date and time format, thumbnail size (fast / balanced / best quality), thumbnails (square crop, animated GIFs, square / rounded / circle styles), horizontal scrolling, pull to refresh, videos, fullscreen (max brightness, black background, auto-hide, tap the sides to change media, brightness by vertical drag, swipe down to close, notch, details overlay, slideshow speed), zoom, viewer action bar, security (lock the app, hidden items, or delete / move operations behind your fingerprint, face or PIN), file operations, trash, thumbnail cache, export / import of favorites and of all settings.
+
+Thumbnails are kept in the app's own storage (up to 1 GB, least recently used dropped first), not in its cache, which Android empties whenever storage runs low.
 
 **With other apps**: "Open with galleryFlows" opens a file and lets you swipe through the rest of its folder; apps that ask for a picture or a video can use galleryFlows as the picker.
 

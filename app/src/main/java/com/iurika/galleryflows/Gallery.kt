@@ -2,6 +2,7 @@ package com.iurika.galleryflows
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.BitmapFactory
 import android.graphics.RectF
 import android.os.Environment
 import android.provider.MediaStore
@@ -11,17 +12,25 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
-enum class Kind { IMAGE, VIDEO, GIF }
+// Order matters: Prefs.hiddenKinds has one bit per ordinal
+enum class Kind { IMAGE, VIDEO, GIF, RAW, SVG, PORTRAIT }
 
-private val IMAGE_EXT = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "avif", "bmp", "dng")
+private val IMAGE_EXT = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "avif", "bmp")
+private val RAW_EXT = setOf("dng", "cr2", "cr3", "nef", "nrw", "arw", "orf", "rw2", "raf", "pef", "srw")
 private val VIDEO_EXT = setOf("mp4", "mkv", "webm", "3gp", "mov", "avi", "m4v", "ts")
 
 fun kindOf(name: String): Kind? = when (name.substringAfterLast('.', "").lowercase()) {
     "gif" -> Kind.GIF
-    in IMAGE_EXT -> Kind.IMAGE
+    "svg" -> Kind.SVG
+    in RAW_EXT -> Kind.RAW
+    // portrait-mode shots: Pixel "PXL_…PORTRAIT", Samsung and others "…_portrait"
+    in IMAGE_EXT -> if (name.contains("portrait", ignoreCase = true)) Kind.PORTRAIT else Kind.IMAGE
     in VIDEO_EXT -> Kind.VIDEO
     else -> null
 }
+
+/** A plain photo: what the editor and in-place rotation work on. */
+fun isPhoto(name: String) = kindOf(name).let { it == Kind.IMAGE || it == Kind.PORTRAIT }
 
 class TrashEntry(val original: String, val time: Long)
 
@@ -40,16 +49,28 @@ object Prefs {
     }
 
     // browsing
-    var sort by int(1) // 0 name, 1 modified, 2 size, 3 random, 4 date taken
+    var sort by int(1) // 0 name, 1 modified, 2 size, 3 random, 4 date taken, 5 location, 6 dimension, 7 custom
     var desc by bool(true)
     var folderCols by int(2)
     var mediaCols by int(4)
     var listView by bool(false)
     var showHidden by bool(false)
-    var kinds by int(0b111) // bit per Kind.ordinal
+    var hiddenKinds by int(0) // bit per Kind.ordinal
+    var searchFiles by bool(true) // the search box finds files; off: folders
+    var loadPriority by int(1) // 0 fast (small thumbnails), 1 balanced, 2 best quality
+    var horizontal by bool(false)
+    var pullRefresh by bool(false)
+    // look
+    var accent by int(0) // index in ACCENTS
+    var background by int(0) // index in BACKGROUNDS
+    var english by bool(false)
+    var dateFormat by int(1) // index in DATE_FORMATS
+    var hour24 by bool(true)
     // thumbnails
     var cropThumbs by bool(true)
-    var roundFolders by bool(true)
+    var animateGifs by bool(true)
+    var fileStyle by int(0) // 0 square, 1 rounded
+    var folderStyle by int(1) // 0 square, 1 rounded, 2 circle
     // videos
     var autoplay by bool(false)
     var loopVideos by bool(false)
@@ -62,6 +83,17 @@ object Prefs {
     var tapSides by bool(false)
     var swipeDownClose by bool(true)
     var showDetails by bool(false)
+    var blackBg by bool(true)
+    var imageBrightness by bool(false) // vertical drags on the left half of a picture
+    var showNotch by bool(true) // keep pictures clear of the camera cutout
+    var orientation by int(0) // 0 system, 1 portrait, 2 landscape, 3 follows the media
+    // zoom
+    var advancedZoom by bool(true)
+    var gestureRotate by bool(true)
+    var bestQuality by bool(true) // sharp tiles from the full file when zoomed in
+    var oneToOne by bool(false) // double tap zooms to the real pixels
+    // viewer action bar
+    var showActions by bool(true)
     var slideSeconds by int(3) // slideshow and shuffle timer
     var shuffleSub by bool(true) // shuffle takes the subfolders too
     // security
@@ -85,6 +117,10 @@ object Prefs {
         set(v) { field = v; put("excluded", v) }
     var pinned: Set<String> = emptySet()
         set(v) { field = v; put("pinned", v) }
+    var custom: List<String> = emptyList() // "Personnalisé" order: these paths first, in this order
+        set(v) { field = v.distinct().take(5000); put("custom", field) }
+    var actions: List<String> = emptyList() // viewer bottom bar, keys of VIEWER_ACTIONS
+        set(v) { field = v; put("actions", v) }
     var trash: Map<String, TrashEntry> = emptyMap() // trashed path -> where it came from
         set(v) { field = v; sp.edit().putString("trash", v.entries.joinToString("\n") { "${it.key}\t${it.value.original}\t${it.value.time}" }).apply() }
 
@@ -92,7 +128,14 @@ object Prefs {
         if (::sp.isInitialized) return
         sp = c.getSharedPreferences("galleryflows", Context.MODE_PRIVATE)
         positions = c.getSharedPreferences("positions", Context.MODE_PRIVATE)
+        migrate()
         loadLists()
+    }
+
+    // 0.3: a bit per shown kind (3 kinds) and a rounded-folders flag
+    private fun migrate() {
+        if (sp.contains("kinds")) { hiddenKinds = sp.getInt("kinds", 7).inv() and 7; sp.edit().remove("kinds").apply() }
+        if (sp.contains("roundFolders")) { folderStyle = if (sp.getBoolean("roundFolders", true)) 1 else 0; sp.edit().remove("roundFolders").apply() }
     }
 
     private fun loadLists() {
@@ -101,6 +144,8 @@ object Prefs {
         favorites = strings("favorites").toSet()
         excluded = strings("excluded").toSet()
         pinned = strings("pinned").toSet()
+        custom = strings("custom")
+        actions = if (sp.contains("actions")) strings("actions") else listOf("favorite", "edit", "share", "delete", "info")
         trash = strings("trash").mapNotNull { line ->
             line.split('\t').takeIf { it.size == 3 }?.let { (t, o, time) -> t to TrashEntry(o, time.toLongOrNull() ?: 0) }
         }.toMap()
@@ -110,6 +155,7 @@ object Prefs {
         if (old.path in favorites) favorites = favorites - old.path + new.path
         if (old.path in pinned) pinned = pinned - old.path + new.path
         if (old.path in roots) roots = roots.map { if (it == old.path) new.path else it }
+        if (old.path in custom) custom = custom.map { if (it == old.path) new.path else it }
     }
 
     fun position(f: File) = positions.getInt(f.path, 0)
@@ -126,6 +172,7 @@ object Prefs {
                 is String -> putString(k, v)
             }
         }.commit()
+        migrate()
         loadLists()
     }
 
@@ -139,12 +186,13 @@ object Scan {
     private lateinit var ctx: Context
     @Volatile private var cache = ConcurrentHashMap<String, Info>()
     @Volatile private var cleared = 0
-    private val saved get() = File(ctx.cacheDir, "scan")
+    private val saved get() = File(ctx.filesDir, "scan") // not cacheDir: Android empties that whenever storage runs low
     var stale = false // the cache came from disk: show it at once, then [rescan]
 
     // Walking a big tree costs one stat per file, too slow for every launch: the last walk is kept on disk
     fun init(c: Context) {
         ctx = c.applicationContext
+        File(c.cacheDir, "scan").takeIf { it.exists() && !saved.exists() }?.renameTo(saved)
         runCatching {
             saved.forEachLine { line ->
                 val (path, count, cover, newest) = line.split('\t')
@@ -155,7 +203,7 @@ object Scan {
     }
 
     fun save() = runCatching {
-        val tmp = File(ctx.cacheDir, "scan.tmp")
+        val tmp = File(ctx.filesDir, "scan.tmp")
         tmp.writeText(cache.entries.joinToString("\n") { (p, i) -> "$p\t${i.count}\t${i.cover?.path.orEmpty()}\t${i.newest}" })
         tmp.renameTo(saved)
     }
@@ -171,7 +219,7 @@ object Scan {
     fun clear() { cleared++; cache.clear() }
 
     private fun visible(f: File) = (Prefs.showHidden || !f.name.startsWith('.')) && f.path !in Prefs.excluded && f.name != Trash.DIR
-    private fun wanted(f: File) = kindOf(f.name)?.let { Prefs.kinds and (1 shl it.ordinal) != 0 } == true && visible(f)
+    private fun wanted(f: File) = kindOf(f.name)?.let { Prefs.hiddenKinds and (1 shl it.ordinal) == 0 } == true && visible(f)
 
     fun hasNomedia(dir: File) = File(dir, ".nomedia").exists()
 
@@ -191,7 +239,7 @@ object Scan {
         var newest = 0L
         if (depth < 32 && (Prefs.showHidden || files.none { it.name == ".nomedia" })) for (f in files) {
             val i = if (f.isDirectory) { if (!visible(f)) continue; info(f, depth + 1, into) }
-            else if (wanted(f)) Info(1, f, f.lastModified()) else continue
+            else if (wanted(f)) Info(1, f.takeIf { kindOf(it.name) != Kind.SVG }, f.lastModified()) else continue // an SVG's tile makes a poor cover
             count += i.count
             if (i.cover != null && i.newest >= newest) { newest = i.newest; cover = i.cover }
         }
@@ -200,6 +248,21 @@ object Scan {
 
     /** Media whose name contains [q], anywhere below [dirs]. */
     fun search(dirs: List<File>, q: String) = sortFiles(collect(dirs, 5000) { it.name.contains(q, ignoreCase = true) })
+
+    /** Folders with media whose name contains [q], anywhere below [dirs]. */
+    fun searchFolders(dirs: List<File>, q: String): List<File> {
+        val out = ArrayList<File>()
+        fun walk(d: File, depth: Int) {
+            if (depth > 32 || out.size >= 500 || (!Prefs.showHidden && hasNomedia(d))) return
+            for (sub in children(d).first) {
+                if (info(sub).count == 0) continue
+                if (sub.name.contains(q, ignoreCase = true)) out += sub
+                walk(sub, depth + 1)
+            }
+        }
+        dirs.forEach { walk(it, 0) }
+        return sortFolders(out)
+    }
 
     /** Every shown media below [dirs] (unsorted), up to [max]. */
     fun collect(dirs: List<File>, max: Int = 50_000, keep: (File) -> Boolean = { true }): List<File> {
@@ -215,39 +278,58 @@ object Scan {
         return out.toList()
     }
 
-    fun sortFiles(files: List<File>) = order(files, File::getName, File::lastModified, File::length, taken = {
-        val dates = takenDates(files)
-        val key: (File) -> Long = { f -> dates[f.path] ?: f.lastModified() }
-        key
-    })
+    fun sortFiles(files: List<File>) = order(files, File::getPath, File::lastModified, File::length,
+        taken = { val dates = indexed(files, MediaStore.MediaColumns.DATE_TAKEN); { f -> dates[f.path]?.get(0) ?: f.lastModified() } },
+        dims = {
+            val sizes = indexed(files, MediaStore.MediaColumns.WIDTH, MediaStore.MediaColumns.HEIGHT)
+            val key: (File) -> Long = { f -> sizes[f.path]?.let { it[0] * it[1] } ?: pixels(f) }
+            key
+        })
 
     // Pinned folders first, then the chosen order
     fun sortFolders(dirs: List<File>): List<File> {
-        val sorted = order(dirs, File::getName, { info(it).newest }, { info(it).count.toLong() }) { { info(it).newest } }
+        val sorted = order(dirs, File::getPath, { info(it).newest }, { info(it).count.toLong() }, { { info(it).newest } }, { { info(it).count.toLong() } })
         return sorted.filter { it.path in Prefs.pinned } + sorted.filter { it.path !in Prefs.pinned }
     }
 
-    private fun <T> order(items: List<T>, name: (T) -> String, date: (T) -> Long, size: (T) -> Long, taken: () -> (T) -> Long): List<T> {
+    private fun <T> order(items: List<T>, path: (T) -> String, date: (T) -> Long, size: (T) -> Long, taken: () -> (T) -> Long, dims: () -> (T) -> Long): List<T> {
+        val name = { t: T -> path(t).substringAfterLast('/') }
+        val byName = compareBy(String.CASE_INSENSITIVE_ORDER, name)
         val sorted = when (Prefs.sort) {
-            0 -> items.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, name))
+            0 -> items.sortedWith(byName)
             3 -> return items.shuffled()
+            5 -> items.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, path))
+            7 -> { // the hand-placed ones first, the rest by name; no direction
+                val at = Prefs.custom.withIndex().associate { it.value to it.index }
+                return items.sortedWith(compareBy<T> { at[path(it)] ?: Int.MAX_VALUE }.then(byName))
+            }
             else -> {
-                val key = when (Prefs.sort) { 1 -> date; 2 -> size; else -> taken() }
+                val key = when (Prefs.sort) { 1 -> date; 2 -> size; 6 -> dims(); else -> taken() }
                 items.map { it to key(it) }.sortedBy { it.second }.map { it.first }
             }
         }
         return if (Prefs.desc) sorted.asReversed() else sorted
     }
 
-    // EXIF capture dates come from the system MediaStore, which already indexed them; files it doesn't know keep their mtime
-    private fun takenDates(files: List<File>): Map<String, Long> {
-        val out = HashMap<String, Long>()
+    private fun pixels(f: File): Long {
+        if (kindOf(f.name) == Kind.VIDEO) return 0
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.path, o)
+        return o.outWidth.toLong() * o.outHeight
+    }
+
+    // Capture dates and sizes come from the system MediaStore, which already indexed them; files it doesn't know fall back
+    private fun indexed(files: List<File>, vararg cols: String): Map<String, LongArray> {
+        val out = HashMap<String, LongArray>()
         val uri = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
-        val cols = arrayOf(MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DATE_TAKEN)
+        val projection = arrayOf(MediaStore.MediaColumns.DATA, *cols)
         files.map { it.path }.chunked(900).forEach { paths ->
             runCatching {
-                ctx.contentResolver.query(uri, cols, "${cols[0]} IN (${paths.joinToString(",") { "?" }})", paths.toTypedArray(), null)?.use { c ->
-                    while (c.moveToNext()) c.getLong(1).takeIf { it > 0 }?.let { out[c.getString(0)] = it }
+                ctx.contentResolver.query(uri, projection, "${projection[0]} IN (${paths.joinToString(",") { "?" }})", paths.toTypedArray(), null)?.use { c ->
+                    while (c.moveToNext()) {
+                        val v = LongArray(cols.size) { c.getLong(it + 1) }
+                        if (v.all { it > 0 }) out[c.getString(0)] = v
+                    }
                 }
             }
         }

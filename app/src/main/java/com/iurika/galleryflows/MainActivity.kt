@@ -14,6 +14,8 @@ import android.content.Intent
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.view.MotionEvent
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
@@ -78,6 +80,9 @@ class MainActivity : Base() {
     private lateinit var shuffleButton: ImageView
     private lateinit var status: TextView
     private lateinit var list: ListView
+    private lateinit var turn: Turn
+    private lateinit var pullIcon: ImageView
+    private var pullFrom = -1f // where a pull-to-refresh drag started, -1 when none
     private lateinit var selectionBar: LinearLayout
     private lateinit var selectionCount: TextView
     private val adapter = RowAdapter()
@@ -114,11 +119,11 @@ class MainActivity : Base() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(dp(32), 0, dp(32), 0)
             addView(TextView(this@MainActivity).apply {
-                text = "galleryFlows a besoin de l'accès à tous les fichiers pour parcourir tes dossiers et sous-dossiers."
+                text = t("galleryFlows a besoin de l'accès à tous les fichiers pour parcourir tes dossiers et sous-dossiers.")
                 textSize = 16f; gravity = Gravity.CENTER; setTextColor(WHITE)
             })
             addView(Button(this@MainActivity).apply {
-                text = "Autoriser"
+                text = t("Autoriser")
                 setOnClickListener {
                     startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
                 }
@@ -130,7 +135,7 @@ class MainActivity : Base() {
         back = icon(R.drawable.ic_search) { if (dir != null || mode != Mode.BROWSE) onBackPressed() else focusSearch() }
         search = EditText(this).apply {
             setSingleLine(); background = null; textSize = 17f
-            setTextColor(WHITE); setHintTextColor(0xffc8b49c.toInt())
+            setTextColor(WHITE); setHintTextColor(blend(ACCENT, WHITE, .35f))
             addTextChangedListener(object : TextWatcher {
                 override fun afterTextChanged(s: Editable?) { handler.removeCallbacks(searchLater); handler.postDelayed(searchLater, 350) }
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -148,17 +153,21 @@ class MainActivity : Base() {
         title = TextView(this).apply {
             setTextColor(WHITE); textSize = 26f; typeface = Typeface.DEFAULT_BOLD; setSingleLine(); ellipsize = TextUtils.TruncateAt.END
         }
-        shuffleButton = icon(R.drawable.ic_shuffle) { shuffleDialog() }.apply { contentDescription = "Aléatoire" }
+        shuffleButton = icon(R.drawable.ic_shuffle) { shuffleDialog() }.apply { contentDescription = t("Aléatoire") }
+        pullIcon = ImageView(this).apply { setImageResource(R.drawable.ic_refresh); setColorFilter(ACCENT); visibility = View.GONE }
         val titleRow = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             addView(title, LP(0, -2, 1f))
+            addView(pullIcon, LP(dp(24), dp(24)).apply { marginEnd = dp(12) })
             addView(shuffleButton, LP(dp(48), dp(48)))
         }
         status = TextView(this).apply { setTextColor(GREY); textSize = 13f; setPadding(dp(20), 0, dp(20), dp(10)) }
         list = ListView(this).apply {
             adapter = this@MainActivity.adapter
             divider = null; dividerHeight = 0; selector = ColorDrawable(0); isFastScrollEnabled = true
+            setOnTouchListener { _, e -> pull(e); false }
         }
+        turn = Turn(this).apply { addView(list) }
         selectionCount = TextView(this).apply { setTextColor(WHITE); textSize = 17f }
         selectionBar = LinearLayout(this).apply { visibility = View.GONE; gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(BAR) }
         val root = LinearLayout(this).apply {
@@ -167,7 +176,7 @@ class MainActivity : Base() {
             addView(crumbScroll, LP(-1, -2).apply { setMargins(dp(12), dp(8), dp(12), 0) })
             addView(titleRow, LP(-1, -2).apply { setMargins(dp(20), dp(4), dp(8), 0) })
             addView(status)
-            addView(list, LP(-1, 0, 1f))
+            addView(turn, LP(-1, 0, 1f))
             addView(selectionBar, LP(-1, -2))
             setOnApplyWindowInsetsListener { v, ins ->
                 val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
@@ -233,18 +242,19 @@ class MainActivity : Base() {
         val inside = d != null || mode != Mode.BROWSE
         back.setImageResource(if (inside) R.drawable.ic_back else R.drawable.ic_search)
         search.hint = when {
-            mode == Mode.FAVORITES -> "Rechercher dans Favoris"
-            mode == Mode.TRASH -> "Rechercher dans la corbeille"
-            d != null -> "Rechercher dans ${d.name}"
-            picking -> "Choisir un fichier"
-            else -> "Rechercher des fichiers"
+            mode == Mode.FAVORITES -> t("Rechercher dans Favoris")
+            mode == Mode.TRASH -> t("Rechercher dans la corbeille")
+            d != null -> t("Rechercher dans %s", d.name)
+            picking -> t("Choisir un fichier")
+            !Prefs.searchFiles -> t("Rechercher des dossiers")
+            else -> t("Rechercher des fichiers")
         }
         // Big title for where we are; the way back up is a small path above it
-        title.text = when { mode == Mode.FAVORITES -> "Favoris"; mode == Mode.TRASH -> "Corbeille"; d != null -> d.name; else -> "Galerie" }
+        title.text = when { mode == Mode.FAVORITES -> t("Favoris"); mode == Mode.TRASH -> t("Corbeille"); d != null -> d.name; else -> t("Galerie") }
         shuffleButton.visibility = if (mode == Mode.TRASH || picking) View.GONE else View.VISIBLE
         crumbs.removeAllViews()
         crumbScroll.visibility = if (inside) View.VISIBLE else View.GONE
-        crumb("Galerie") { go(null, back = true) }
+        crumb(t("Galerie")) { go(null, back = true) }
         if (d != null) {
             val root = rootOf(d)
             generateSequence(d.parentFile) { it.parentFile }.takeWhile { it.path.length >= root.path.length }
@@ -265,6 +275,29 @@ class MainActivity : Base() {
         })
     }
 
+    // ---- pull to refresh ----
+
+    // Along the list's own axis (e.y), so it works turned sideways too
+    private fun pull(e: MotionEvent) {
+        if (!Prefs.pullRefresh) return
+        val atTop = list.firstVisiblePosition == 0 && (list.getChildAt(0)?.top ?: 0) >= 0
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> pullFrom = if (atTop) e.y else -1f
+            MotionEvent.ACTION_MOVE -> if (pullFrom >= 0) {
+                val p = ((e.y - pullFrom) / dp(120)).coerceIn(0f, 1f)
+                pullIcon.visibility = if (p > 0) View.VISIBLE else View.GONE
+                pullIcon.alpha = .3f + p * .7f; pullIcon.rotation = p * 270
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (pullFrom >= 0 && e.y - pullFrom >= dp(120)) {
+                    pullIcon.animate().rotationBy(720f).setDuration(900).start()
+                    refresh()
+                } else pullIcon.visibility = View.GONE
+                pullFrom = -1f
+            }
+        }
+    }
+
     // ---- loading ----
 
     private fun load(keepScroll: Boolean = false) {
@@ -273,12 +306,18 @@ class MainActivity : Base() {
         val q = search.text.toString().trim()
         val gen = ++generation
         renderHeader()
-        if (!keepScroll) status.text = "Chargement…"
+        if (!keepScroll) status.text = t("Chargement…")
         thread {
             var cards: List<Card> = emptyList()
             var files: List<File> = when {
                 m == Mode.FAVORITES -> Scan.sortFiles(Prefs.favorites.map(::File).filter { it.exists() })
                 m == Mode.TRASH -> Trash.items()
+                q.isNotEmpty() && m == Mode.BROWSE && !Prefs.searchFiles -> {
+                    cards = Scan.searchFolders(listOfNotNull(d).ifEmpty { Prefs.roots.map(::File) }, q).map { f ->
+                        Card(f.name, Scan.info(f), f.path in Prefs.pinned, { go(f) }, { folderOptions(f) })
+                    }
+                    emptyList()
+                }
                 q.isNotEmpty() -> Scan.search(listOfNotNull(d).ifEmpty { Prefs.roots.map(::File) }, q)
                 d == null -> { cards = rootCards(); emptyList() }
                 else -> {
@@ -302,23 +341,29 @@ class MainActivity : Base() {
     private fun rootCards(): List<Card> {
         val favs = Prefs.favorites.map(::File).filter { it.exists() }
         val fav = if (favs.isEmpty()) emptyList()
-        else listOf(Card("Favoris", Info(favs.size, favs.maxByOrNull { it.lastModified() }, 0), false, { go(null, Mode.FAVORITES) }, null))
-        val roots = Prefs.roots.map(::File).sortedByDescending { it.path in Prefs.pinned }.map { f ->
+        else listOf(Card(t("Favoris"), Info(favs.size, favs.maxByOrNull { it.lastModified() }, 0), false, { go(null, Mode.FAVORITES) }, null))
+        // roots keep the order they were added in, unless placed by hand
+        val placed = if (Prefs.sort == 7) Prefs.custom.withIndex().associate { it.value to it.index } else emptyMap()
+        val roots = Prefs.roots.map(::File).sortedBy { placed[it.path] ?: Int.MAX_VALUE }.sortedByDescending { it.path in Prefs.pinned }.map { f ->
             Card(f.name, Scan.info(f), f.path in Prefs.pinned, { go(f) }, { rootOptions(f) })
         }
         val trashed = if (Prefs.showTrash && !picking) Trash.items() else emptyList()
         val trash = if (trashed.isEmpty()) emptyList()
-        else listOf(Card("Corbeille", Info(trashed.size, trashed.first(), 0), false, { go(null, Mode.TRASH) }, null))
+        else listOf(Card(t("Corbeille"), Info(trashed.size, trashed.first(), 0), false, { go(null, Mode.TRASH) }, null))
         return fav + roots + trash
     }
 
     private fun show(cards: List<Card>, files: List<File>, keepScroll: Boolean) {
         if (leaving) { whenLeft = { show(cards, files, keepScroll) }; return }
         media = files
+        pullIcon.animate().cancel(); pullIcon.visibility = View.GONE
         selected.retainAll(files.toSet())
+        // sideways scrolling is for grids; a list stays a list
+        val sideways = Prefs.horizontal && !Prefs.listView
+        if (turn.on != sideways) { turn.on = sideways; list.adapter = adapter } // drop rows built for the other way
         // Folders and files in the same place: a labelled break above each part
         val both = cards.isNotEmpty() && files.isNotEmpty()
-        fun head(label: String, n: Int) = if (both) listOf(listOf<Any>("$label · $n")) else emptyList()
+        fun head(label: String, n: Int) = if (both) listOf(listOf<Any>("${t(label)} · $n")) else emptyList()
         rows = if (Prefs.listView) head("Dossiers", cards.size) + cards.map { listOf(it) } + head("Fichiers", files.size) + files.map { listOf(it) }
         else head("Dossiers", cards.size) + cards.chunked(Prefs.folderCols) + head("Fichiers", files.size) + files.chunked(Prefs.mediaCols)
         adapter.notifyDataSetChanged()
@@ -331,8 +376,8 @@ class MainActivity : Base() {
         status.text = listOfNotNull(
             cards.size.takeIf { it > 0 }?.let { plural(it, "dossier") },
             files.size.takeIf { it > 0 }?.let { plural(it, "fichier") },
-            if (mode == Mode.TRASH && files.isNotEmpty()) "supprimés définitivement après 30 jours" else null,
-        ).joinToString(" · ").ifEmpty { if (mode == Mode.TRASH) "La corbeille est vide" else "Aucun média ici" }
+            if (mode == Mode.TRASH && files.isNotEmpty()) t("supprimés définitivement après 30 jours") else null,
+        ).joinToString(" · ").ifEmpty { t(if (mode == Mode.TRASH) "La corbeille est vide" else "Aucun média ici") }
         updateSelection()
     }
 
@@ -374,7 +419,8 @@ class MainActivity : Base() {
                 repeat(cols) { addView(if (folder) folderCell() else mediaCell(), LP(0, -2, 1f)) }
             }
             for (i in 0 until cols) {
-                val cell = v.getChildAt(i)
+                // turned sideways, the first item goes to the far end of the row: the top of the screen
+                val cell = v.getChildAt(if (turn.on) cols - 1 - i else i)
                 when (val item = row.getOrNull(i)) {
                     is Card -> bindFolder(cell as LinearLayout, item)
                     is File -> bindMedia(cell as FrameLayout, item)
@@ -386,7 +432,7 @@ class MainActivity : Base() {
     }
 
     private fun details(f: File): String {
-        val ago = DateUtils.getRelativeTimeSpanString(f.lastModified())
+        val ago = formatDate(f.lastModified())
         val origin = if (mode == Mode.TRASH) Trash.originalOf(f)?.let { " · ${File(it).parent}" } ?: "" else ""
         return "${Formatter.formatShortFileSize(this, f.length())} · $ago$origin"
     }
@@ -408,7 +454,7 @@ class MainActivity : Base() {
         (texts.getChildAt(0) as TextView).text = title
         (texts.getChildAt(1) as TextView).text = sub
         v.getChildAt(2).visibility = if (pinned) View.VISIBLE else View.GONE
-        v.background = if (isSelected) ColorDrawable(0x66f57c00) else ripple()
+        v.background = if (isSelected) ColorDrawable(withAlpha(ACCENT, 0x66)) else ripple()
         v.setOnClickListener { click() }
         v.setOnLongClickListener { long() }
     }
@@ -419,8 +465,12 @@ class MainActivity : Base() {
             foreground = ripple(rounded(WHITE, 16))
             addView(SquareImageView(this@MainActivity).apply { clipToOutline = true })
             addView(ImageView(this@MainActivity).apply {
-                setImageResource(R.drawable.ic_pin); background = rounded(0x66000000, 16); setPadding(dp(6), dp(6), dp(6), dp(6))
-            }, FrameLayout.LayoutParams(dp(32), dp(32)).apply { setMargins(dp(8), dp(8), 0, 0) })
+                setImageResource(R.drawable.ic_pin); background = rounded(0x66000000, 16); setPadding(dp(7), dp(7), dp(7), dp(7))
+            }, FrameLayout.LayoutParams(dp(30), dp(30)).apply { setMargins(dp(8), dp(8), 0, 0) })
+            // the name over the picture, for sideways scrolling where there's no room below it
+            addView(TextView(this@MainActivity).apply {
+                textSize = 13f; setTextColor(WHITE); setSingleLine(); ellipsize = TextUtils.TruncateAt.END; setPadding(dp(10), dp(18), dp(10), dp(8))
+            }, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         })
         addView(TextView(this@MainActivity).apply {
             textSize = 15f; setTextColor(WHITE); setSingleLine(); ellipsize = TextUtils.TruncateAt.END; setPadding(0, dp(6), 0, 0)
@@ -430,29 +480,53 @@ class MainActivity : Base() {
     private fun bindFolder(cell: LinearLayout, card: Card) {
         val frame = cell.getChildAt(0) as FrameLayout
         val img = frame.getChildAt(0) as SquareImageView
-        img.background = rounded(0xff2a2a2a.toInt(), if (Prefs.roundFolders) 16 else 0)
+        img.background = shape(Prefs.folderStyle, 16)
+        frame.foreground = ripple(shape(Prefs.folderStyle, 16, WHITE))
         img.scaleType = if (Prefs.cropThumbs) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
         Thumbs.load(img, card.info.cover)
         frame.getChildAt(1).visibility = if (card.pinned) View.VISIBLE else View.GONE
-        (cell.getChildAt(1) as TextView).text = "${card.name} (${card.info.count})"
+        val label = "${card.name} (${card.info.count})"
+        val inside = frame.getChildAt(2) as TextView
+        val below = cell.getChildAt(1) as TextView
+        // sideways: the row is turned, so each cell turns back, its name over the picture; a circle gets it centered, without the shade
+        frame.rotation = if (turn.on) 90f else 0f
+        val circle = Prefs.folderStyle == 2
+        inside.visibility = if (turn.on) View.VISIBLE else View.GONE
+        inside.gravity = if (circle) Gravity.CENTER else Gravity.START
+        inside.background = if (circle) null else GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xaa000000.toInt(), 0))
+        inside.setShadowLayer(if (circle) 6f else 0f, 0f, 0f, 0xff000000.toInt())
+        below.visibility = if (inside.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        inside.text = label; below.text = label
+        if (Prefs.folderStyle == 2) below.gravity = Gravity.CENTER_HORIZONTAL else below.gravity = Gravity.START
         cell.setOnClickListener { card.open() }
         cell.setOnLongClickListener { card.options?.invoke(); card.options != null }
     }
 
     private fun mediaCell() = FrameLayout(this).apply {
-        setPadding(dp(1), dp(1), dp(1), dp(1))
-        foreground = ripple()
-        addView(SquareImageView(this@MainActivity))
+        addView(SquareImageView(this@MainActivity).apply { clipToOutline = true })
         addView(ImageView(this@MainActivity).apply {
-            setImageResource(R.drawable.ic_play); background = rounded(0x66000000, 18); setPadding(dp(6), dp(6), dp(6), dp(6))
+            setImageResource(R.drawable.ic_play); background = rounded(0x66000000, 18); setPadding(dp(9), dp(9), dp(9), dp(9))
         }, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
-        addView(View(this@MainActivity).apply { setBackgroundColor(0x88f57c00.toInt()); visibility = View.GONE }, FrameLayout.LayoutParams(-1, -1)) // selected
+        addView(View(this@MainActivity).apply { visibility = View.GONE }, FrameLayout.LayoutParams(-1, -1)) // selected
+    }
+
+    /** A thumbnail's backdrop and clip: 0 square, 1 rounded, 2 circle. */
+    private fun shape(style: Int, radius: Int, color: Int = 0xff2a2a2a.toInt()) = GradientDrawable().apply {
+        setColor(color)
+        if (style == 2) shape = GradientDrawable.OVAL else cornerRadius = if (style == 1) dp(radius).toFloat() else 0f
     }
 
     private fun bindMedia(cell: FrameLayout, f: File) {
         val img = cell.getChildAt(0) as SquareImageView
+        val round = Prefs.fileStyle == 1
+        val pad = if (round) dp(3) else dp(1)
+        cell.setPadding(pad, pad, pad, pad)
+        cell.rotation = if (turn.on) 90f else 0f // square, so it turns in place
+        img.background = shape(Prefs.fileStyle, 10)
+        cell.foreground = ripple(shape(Prefs.fileStyle, 10, WHITE))
+        cell.getChildAt(2).background = shape(Prefs.fileStyle, 10, withAlpha(ACCENT, 0x88))
         img.scaleType = if (Prefs.cropThumbs) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
-        Thumbs.load(img, f)
+        Thumbs.load(img, f, animate = Prefs.animateGifs && kindOf(f.name) == Kind.GIF)
         cell.getChildAt(1).visibility = if (kindOf(f.name) == Kind.VIDEO) View.VISIBLE else View.GONE
         val sel = cell.getChildAt(2)
         val on = f in selected
@@ -501,29 +575,29 @@ class MainActivity : Base() {
         val d = dir
         val favorites = mode == Mode.FAVORITES
         val pad = dp(24)
-        val only = RadioButton(this).apply { id = View.generateViewId(); text = if (d == null) "Dossiers principaux seulement" else "Ce dossier seulement" }
-        val deep = RadioButton(this).apply { id = View.generateViewId(); text = "Avec tous les sous-dossiers" }
+        val only = RadioButton(this).apply { id = View.generateViewId(); text = t(if (d == null) "Dossiers principaux seulement" else "Ce dossier seulement") }
+        val deep = RadioButton(this).apply { id = View.generateViewId(); text = t("Avec tous les sous-dossiers") }
         val scope = RadioGroup(this).apply { addView(only); addView(deep); check(if (Prefs.shuffleSub) deep.id else only.id) }
         val minutes = Prefs.slideSeconds >= 60 && Prefs.slideSeconds % 60 == 0
         val amount = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER; setText("${if (minutes) Prefs.slideSeconds / 60 else Prefs.slideSeconds}")
             gravity = Gravity.CENTER; setSelectAllOnFocus(true)
         }
-        val sec = RadioButton(this).apply { id = View.generateViewId(); text = "secondes" }
+        val sec = RadioButton(this).apply { id = View.generateViewId(); text = t("secondes") }
         val min = RadioButton(this).apply { id = View.generateViewId(); text = "minutes" }
         val unit = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL; addView(sec); addView(min); check(if (minutes) min.id else sec.id) }
         val view = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(pad, dp(8), pad, 0)
             if (!favorites) addView(scope)
-            addView(TextView(this@MainActivity).apply { text = "Passer au suivant toutes les"; setPadding(0, dp(16), 0, 0) })
+            addView(TextView(this@MainActivity).apply { text = t("Passer au suivant toutes les"); setPadding(0, dp(16), 0, 0) })
             addView(LinearLayout(this@MainActivity).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(amount, LP(dp(72), -2).apply { marginEnd = dp(12) })
                 addView(unit)
             })
         }
-        AlertDialog.Builder(this).setTitle("Aléatoire").setView(view)
-            .setPositiveButton("Lancer") { _, _ ->
+        AlertDialog.Builder(this).setTitle(t("Aléatoire")).setView(view)
+            .setPositiveButton(t("Lancer")) { _, _ ->
                 val n = amount.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 1
                 Prefs.slideSeconds = if (unit.checkedRadioButtonId == min.id) n * 60 else n
                 Prefs.shuffleSub = scope.checkedRadioButtonId == deep.id
@@ -543,7 +617,7 @@ class MainActivity : Base() {
                     }
                 }
             }
-            .setNegativeButton("Annuler", null).show()
+            .setNegativeButton(t("Annuler"), null).show()
     }
 
     private fun returnPicked(files: List<File>) {
@@ -569,7 +643,7 @@ class MainActivity : Base() {
         selectionBar.addView(icon(R.drawable.ic_close) { selected.clear(); updateSelection() })
         selectionBar.addView(selectionCount, LP(0, -2, 1f))
         selectionBar.addView(TextView(this).apply {
-            text = "Tout"; setTextColor(WHITE); textSize = 15f; setPadding(dp(12), dp(12), dp(12), dp(12))
+            text = t("Tout"); setTextColor(WHITE); textSize = 15f; setPadding(dp(12), dp(12), dp(12), dp(12))
             setOnClickListener { selected.addAll(media); updateSelection() }
         })
         when {
@@ -579,6 +653,7 @@ class MainActivity : Base() {
                 selectionBar.addView(icon(R.drawable.ic_delete) { deleteSelected() })
             }
             else -> {
+                if (Prefs.sort == 7) selectionBar.addView(icon(R.drawable.ic_top) { placeFirst(selected.map { it.path }); selected.clear() })
                 selectionBar.addView(icon(R.drawable.ic_share) { share(selected) })
                 selectionBar.addView(icon(R.drawable.ic_copy) { transfer(move = false) })
                 selectionBar.addView(icon(R.drawable.ic_folder) { transfer(move = true) })
@@ -606,11 +681,18 @@ class MainActivity : Base() {
         val permanent = mode == Mode.TRASH || !Prefs.useTrash
         val run = { guardOps { runOp { Ops.delete(this, files, permanent) } } }
         if (Prefs.skipDeleteConfirm) run()
-        else confirm(if (permanent) "Supprimer définitivement ${plural(files.size, "fichier")} ?" else "Mettre ${plural(files.size, "fichier")} à la corbeille ?", run)
+        else confirm(t(if (permanent) "Supprimer définitivement %s ?" else "Mettre %s à la corbeille ?", plural(files.size, "fichier")), run)
+    }
+
+    /** "Personnalisé" order: these go first, in the order given. */
+    private fun placeFirst(paths: List<String>) {
+        Prefs.custom = paths + Prefs.custom
+        load(keepScroll = true)
     }
 
     private fun folderOptions(f: File) = choose(f.name, listOfNotNull(
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
+        if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
         "Renommer" to { ask("Renommer", f.name) { n -> runOp { if (Ops.rename(this, f, n) != null) "Renommé" else "Impossible de renommer" } } },
         (if (Scan.hasNomedia(f)) "Afficher (retirer .nomedia)" else "Cacher (ajouter .nomedia)") to { Ops.setHidden(f, !Scan.hasNomedia(f)); refresh() },
         "Exclure de la galerie" to { Prefs.excluded = Prefs.excluded + f.path; refresh() },
@@ -618,8 +700,9 @@ class MainActivity : Base() {
         "Créer un raccourci" to { shortcut(f) },
     ))
 
-    private fun rootOptions(f: File) = choose(f.path, listOf(
+    private fun rootOptions(f: File) = choose(f.path, listOfNotNull(
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
+        if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
         "Créer un raccourci" to { shortcut(f) },
         "Retirer de l'écran principal" to { Prefs.roots = Prefs.roots - f.path; load(keepScroll = true) },
     ))
@@ -629,17 +712,8 @@ class MainActivity : Base() {
         load(keepScroll = true)
     }
 
-    private fun shortcut(f: File) {
-        val sm = getSystemService(ShortcutManager::class.java)
-        if (!sm.isRequestPinShortcutSupported) return toast("Le lanceur ne gère pas les raccourcis")
-        val cover = Scan.info(f).cover?.let { Thumbs.cached(it) }
-        val info = ShortcutInfo.Builder(this, f.path).setShortLabel(f.name)
-            .setIcon(cover?.let { Icon.createWithBitmap(it) } ?: Icon.createWithResource(this, R.drawable.ic_launcher))
-            .setIntent(Intent(this, MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("path", f.path)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
-            .build()
-        sm.requestPinShortcut(info, null)
-    }
+    private fun shortcut(f: File) = pinShortcut(f.path, f.name, Scan.info(f).cover?.let { Thumbs.cached(it) },
+        Intent(this, MainActivity::class.java).setAction(Intent.ACTION_VIEW).putExtra("path", f.path).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
 
     // ---- menu ----
 
@@ -648,7 +722,7 @@ class MainActivity : Base() {
         val actions = listOfNotNull<Pair<String, () -> Unit>>(
             "Trier par" to ::sortDialog,
             "Filtrer les médias" to ::filterDialog,
-            "Mode d'affichage : ${if (Prefs.listView) "liste" else "grille"}" to { Prefs.listView = !Prefs.listView; load(keepScroll = true) },
+            t(if (Prefs.listView) "Mode d'affichage : liste" else "Mode d'affichage : grille") to { Prefs.listView = !Prefs.listView; load(keepScroll = true) },
             "Colonnes des dossiers" to { columns(Prefs.folderCols) { Prefs.folderCols = it } },
             "Colonnes des médias" to { columns(Prefs.mediaCols) { Prefs.mediaCols = it } },
             (if (Prefs.showHidden) "Masquer les fichiers cachés" else "Afficher les fichiers cachés") to ::toggleHidden,
@@ -668,7 +742,7 @@ class MainActivity : Base() {
             if (picking) null else "Paramètres" to { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
         PopupMenu(this, anchor).apply {
-            actions.forEachIndexed { i, a -> menu.add(0, i, i, a.first) }
+            actions.forEachIndexed { i, a -> menu.add(0, i, i, t(a.first)) }
             setOnMenuItemClickListener { actions[it.itemId].second(); true }
             show()
         }
@@ -676,33 +750,38 @@ class MainActivity : Base() {
 
     private fun toggleHidden() {
         val flip = { Prefs.showHidden = !Prefs.showHidden; refresh() }
-        if (!Prefs.showHidden && Prefs.lockHidden) authenticate("Afficher les éléments cachés", flip) else flip()
+        if (!Prefs.showHidden && Prefs.lockHidden) authenticate(t("Afficher les éléments cachés"), flip) else flip()
     }
 
     private fun sortDialog() {
+        // shown in this order; the numbers are Prefs.sort's
+        val options = listOf(0 to "Nom", 5 to "Emplacement", 6 to "Dimension", 2 to "Taille", 1 to "Date de modification",
+            4 to "Date de prise de vue", 3 to "Aléatoire", 7 to "Personnalisé")
         var choice = Prefs.sort
-        fun apply(desc: Boolean) { Prefs.sort = choice; Prefs.desc = desc; load(keepScroll = true) }
-        AlertDialog.Builder(this).setTitle("Trier par")
-            .setSingleChoiceItems(arrayOf("Nom", "Date de modification", "Taille", "Aléatoire", "Date de prise de vue"), choice) { _, i -> choice = i }
-            .setPositiveButton("Décroissant") { _, _ -> apply(true) }
-            .setNegativeButton("Croissant") { _, _ -> apply(false) }
+        fun apply(desc: Boolean) {
+            Prefs.sort = choice; Prefs.desc = desc; load(keepScroll = true)
+            if (choice == 7) toast(t("Appui long sur des éléments, puis ⤒ pour les placer en premier"))
+        }
+        AlertDialog.Builder(this).setTitle(t("Trier par"))
+            .setSingleChoiceItems(options.map { t(it.second) }.toTypedArray(), options.indexOfFirst { it.first == choice }) { _, i -> choice = options[i].first }
+            .setPositiveButton(t("Décroissant")) { _, _ -> apply(true) }
+            .setNegativeButton(t("Croissant")) { _, _ -> apply(false) }
             .show()
     }
 
     private fun filterDialog() {
-        val checked = BooleanArray(Kind.entries.size) { Prefs.kinds and (1 shl it) != 0 }
-        AlertDialog.Builder(this).setTitle("Filtrer les médias")
-            .setMultiChoiceItems(arrayOf("Images", "Vidéos", "GIF"), checked) { _, i, on -> checked[i] = on }
-            .setPositiveButton("OK") { _, _ -> Prefs.kinds = checked.indices.filter { checked[it] }.sumOf { 1 shl it }; refresh() }
-            .setNegativeButton("Annuler", null).show()
+        val checked = BooleanArray(Kind.entries.size) { Prefs.hiddenKinds and (1 shl it) == 0 }
+        val labels = arrayOf("Images", "Vidéos", "GIF", "Images RAW", "SVG", "Portraits").map { t(it) }.toTypedArray() // Kind order
+        AlertDialog.Builder(this).setTitle(t("Filtrer les médias"))
+            .setMultiChoiceItems(labels, checked) { _, i, on -> checked[i] = on }
+            .setPositiveButton("OK") { _, _ -> Prefs.hiddenKinds = checked.indices.filter { !checked[it] }.sumOf { 1 shl it }; refresh() }
+            .setNegativeButton(t("Annuler"), null).show()
     }
 
     private fun columns(current: Int, set: (Int) -> Unit) {
-        val labels = (1..10).map { if (it == 1) "1 colonne" else "$it colonnes" }.toTypedArray()
+        val labels = (1..20).map { plural(it, "colonne") }.toTypedArray()
         AlertDialog.Builder(this).setSingleChoiceItems(labels, current - 1) { dialog, i ->
             set(i + 1); dialog.dismiss(); load(keepScroll = true)
         }.show()
     }
 }
-
-fun plural(n: Int, word: String) = "$n $word" + if (n > 1) "s" else ""
