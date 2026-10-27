@@ -1,8 +1,11 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.TransitionDrawable
 import android.media.ThumbnailUtils
 import android.os.Handler
 import android.os.Looper
@@ -47,7 +50,10 @@ object Thumbs {
         pool.execute {
             if (view.tag != k) return@execute // scrolled away before its turn
             val bmp = get(file, k!!) ?: return@execute
-            main.post { if (view.tag == k) view.setImageBitmap(bmp) }
+            // fade in, like other galleries, instead of popping in
+            main.post { if (view.tag == k) view.setImageDrawable(TransitionDrawable(arrayOf(ColorDrawable(0), BitmapDrawable(view.resources, bmp))).apply {
+                isCrossFadeEnabled = true; startTransition(180)
+            }) }
         }
     }
 

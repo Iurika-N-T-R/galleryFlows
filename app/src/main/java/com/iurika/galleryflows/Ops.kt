@@ -1,4 +1,4 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
 import android.content.Context
 import android.media.MediaScannerConnection

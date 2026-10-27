@@ -1,4 +1,4 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

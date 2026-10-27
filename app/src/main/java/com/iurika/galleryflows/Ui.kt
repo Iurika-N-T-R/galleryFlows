@@ -1,4 +1,4 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -9,6 +9,8 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.storage.StorageManager
@@ -41,6 +43,9 @@ fun Context.icon(res: Int, onClick: (View) -> Unit) = ImageView(this).apply {
     background = RippleDrawable(ColorStateList.valueOf(0x33ffffff), null, null)
     setOnClickListener(onClick)
 }
+
+/** Touch feedback; [mask] gives its shape, a plain rectangle otherwise. */
+fun ripple(mask: Drawable = ColorDrawable(WHITE)) = RippleDrawable(ColorStateList.valueOf(0x33ffffff), null, mask)
 
 /** A square thumbnail: height follows width. */
 class SquareImageView(c: Context) : ImageView(c) {
@@ -130,7 +135,7 @@ abstract class Base : Activity() {
         window.decorView.alpha = 0f // nothing visible behind the prompt
         if (Lock.prompting) return
         Lock.prompting = true
-        authenticate("Déverrouiller galleryflows", {
+        authenticate("Déverrouiller galleryFlows", {
             Lock.prompting = false; Lock.locked = false
             window.decorView.alpha = 1f
             onUnlocked()

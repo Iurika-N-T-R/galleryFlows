@@ -1,4 +1,4 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -135,11 +135,38 @@ data class Info(val count: Int, val cover: File?, val newest: Long)
 
 object Scan {
     private lateinit var ctx: Context
-    private val cache = ConcurrentHashMap<String, Info>()
+    @Volatile private var cache = ConcurrentHashMap<String, Info>()
+    @Volatile private var cleared = 0
+    private val saved get() = File(ctx.cacheDir, "scan")
+    var stale = false // the cache came from disk: show it at once, then [rescan]
 
-    fun init(c: Context) { ctx = c.applicationContext }
+    // Walking a big tree costs one stat per file, too slow for every launch: the last walk is kept on disk
+    fun init(c: Context) {
+        ctx = c.applicationContext
+        runCatching {
+            saved.forEachLine { line ->
+                val (path, count, cover, newest) = line.split('\t')
+                cache[path] = Info(count.toInt(), cover.takeIf { it.isNotEmpty() }?.let(::File), newest.toLong())
+            }
+        }
+        stale = cache.isNotEmpty()
+    }
 
-    fun clear() = cache.clear()
+    fun save() = runCatching {
+        val tmp = File(ctx.cacheDir, "scan.tmp")
+        tmp.writeText(cache.entries.joinToString("\n") { (p, i) -> "$p\t${i.count}\t${i.cover?.path.orEmpty()}\t${i.newest}" })
+        tmp.renameTo(saved)
+    }
+
+    /** Walks every root again in the background and swaps the result in, unless a [clear] happened meanwhile. */
+    fun rescan() {
+        val gen = cleared
+        val fresh = ConcurrentHashMap<String, Info>()
+        Prefs.roots.forEach { info(File(it), into = fresh) }
+        if (gen == cleared) { cache = fresh; save() }
+    }
+
+    fun clear() { cleared++; cache.clear() }
 
     private fun visible(f: File) = (Prefs.showHidden || !f.name.startsWith('.')) && f.path !in Prefs.excluded && f.name != Trash.DIR
     private fun wanted(f: File) = kindOf(f.name)?.let { Prefs.kinds and (1 shl it.ordinal) != 0 } == true && visible(f)
@@ -155,18 +182,18 @@ object Scan {
     }
 
     // Media count and newest file of a whole subtree, memoized so one walk of a root caches every folder below it
-    fun info(dir: File, depth: Int = 0): Info = cache[dir.path] ?: run {
+    fun info(dir: File, depth: Int = 0, into: MutableMap<String, Info> = cache): Info = into[dir.path] ?: run {
         val files = dir.listFiles().orEmpty()
         var count = 0
         var cover: File? = null
         var newest = 0L
         if (depth < 32 && (Prefs.showHidden || files.none { it.name == ".nomedia" })) for (f in files) {
-            val i = if (f.isDirectory) { if (!visible(f)) continue; info(f, depth + 1) }
+            val i = if (f.isDirectory) { if (!visible(f)) continue; info(f, depth + 1, into) }
             else if (wanted(f)) Info(1, f, f.lastModified()) else continue
             count += i.count
             if (i.cover != null && i.newest >= newest) { newest = i.newest; cover = i.cover }
         }
-        Info(count, cover, newest).also { cache[dir.path] = it }
+        Info(count, cover, newest).also { into[dir.path] = it }
     }
 
     /** Media whose name contains [q], anywhere below [dirs]. */

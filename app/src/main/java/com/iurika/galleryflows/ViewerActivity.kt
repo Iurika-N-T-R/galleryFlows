@@ -1,5 +1,6 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
+import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
@@ -33,6 +34,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.animation.DecelerateInterpolator
 import android.webkit.MimeTypeMap
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -99,7 +101,7 @@ class ViewerActivity : Base() {
                 if (image?.isZoomed == true) return false
                 if (abs(vx) > abs(vy) && abs(vx) > 800) { step(if (vx < 0) 1 else -1); return true }
                 val gesturesOwnVertical = video != null && Prefs.videoGestures
-                if (Prefs.swipeDownClose && !gesturesOwnVertical && vy > 1500 && vy > abs(vx)) { finish(); return true }
+                if (Prefs.swipeDownClose && !gesturesOwnVertical && vy > 1500 && vy > abs(vx)) { closeDown(); return true }
                 return false
             }
         })
@@ -203,7 +205,7 @@ class ViewerActivity : Base() {
     /** A content:// or file:// URI from another app, as a real file we can browse next to. */
     private fun resolve(uri: Uri): File? {
         if (uri.scheme == "file") return uri.path?.let(::File)
-        if (uri.authority == "com.galleryflows.files") return File(uri.path!!)
+        if (uri.authority == "com.iurika.galleryflows.files") return File(uri.path!!)
         runCatching {
             contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull()?.let(::File)?.takeIf { it.canRead() }?.let { return it }
@@ -242,7 +244,18 @@ class ViewerActivity : Base() {
 
     private fun step(delta: Int) {
         val n = pos + delta
-        if (n in items.indices) { pos = n; show() }
+        if (n !in items.indices) return
+        pos = n; show()
+        // the next picture comes in from the side it was swiped from
+        content.translationX = content.width * .3f * delta; content.alpha = .3f
+        content.animate().translationX(0f).alpha(1f).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun closeDown() {
+        content.animate().translationY(content.height.toFloat()).alpha(0f).setDuration(200).withEndAction {
+            finish()
+            @Suppress("DEPRECATION") overridePendingTransition(0, android.R.anim.fade_out)
+        }.start()
     }
 
     private fun show() {
@@ -572,7 +585,13 @@ class ZoomImageView(c: Context) : ImageView(c) {
             if (isZoomed) { m.postTranslate(-dx, -dy); fix() }
             return true
         }
-        override fun onDoubleTap(e: MotionEvent): Boolean { zoomTo(if (isZoomed) 1f else 2.5f, e.x, e.y); return true }
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            ValueAnimator.ofFloat(scale, if (isZoomed) 1f else 2.5f).apply {
+                duration = 200; interpolator = DecelerateInterpolator()
+                addUpdateListener { zoomTo(it.animatedValue as Float, e.x, e.y) }
+            }.start()
+            return true
+        }
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean { onTap(e.x); return true }
     })
 

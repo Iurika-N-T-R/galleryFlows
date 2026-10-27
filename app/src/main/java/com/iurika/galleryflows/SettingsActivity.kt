@@ -1,4 +1,4 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
 import android.app.AlertDialog
 import android.content.Intent
@@ -103,7 +103,7 @@ class SettingsActivity : Base() {
 
         section("À propos")
         val version = packageManager.getPackageInfo(packageName, 0).versionName
-        action("galleryflows $version", { "Galerie avec navigation Dossier › Sous-dossier › … › Images" }) {}
+        action("galleryFlows $version", { "Galerie avec navigation Dossier › Sous-dossier › … › Images" }) {}
     }
 
     @Deprecated("framework API")

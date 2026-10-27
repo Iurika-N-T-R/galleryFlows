@@ -10,10 +10,10 @@ plugins {
 val keystore = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use(::load) } }
 
 android {
-    namespace = "com.galleryflows"
+    namespace = "com.iurika.galleryflows"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.galleryflows"
+        applicationId = "com.iurika.galleryflows"
         // 30: all-files access (MANAGE_EXTERNAL_STORAGE) and File-based ThumbnailUtils
         minSdk = 30
         targetSdk = 35

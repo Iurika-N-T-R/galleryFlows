@@ -1,5 +1,6 @@
-package com.galleryflows
+package com.iurika.galleryflows
 
+import android.app.ActivityOptions
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Intent
@@ -22,6 +23,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.Button
@@ -48,6 +50,7 @@ class MainActivity : Base() {
     private val selected = LinkedHashSet<File>()
     private val scrollMemory = HashMap<String, Int>()
     private var generation = 0
+    private var slideFrom = 0 // next list shown slides in from this side: 1 = deeper, -1 = back up, 0 = no animation
     private var built = false
     private val handler = Handler(Looper.getMainLooper())
     private val searchLater = Runnable { load() }
@@ -82,6 +85,15 @@ class MainActivity : Base() {
         if (!built) { build(); built = true }
         if (Session.dirty) { Session.dirty = false; Scan.clear() }
         load(keepScroll = true)
+        if (Scan.stale) {
+            Scan.stale = false
+            thread { Scan.rescan(); runOnUiThread { if (!isDestroyed) load(keepScroll = true) } }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        thread { Scan.save() } // next launch starts from this walk
     }
 
     private fun askPermission() {
@@ -90,7 +102,7 @@ class MainActivity : Base() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(dp(32), 0, dp(32), 0)
             addView(TextView(this@MainActivity).apply {
-                text = "galleryflows a besoin de l'accès à tous les fichiers pour parcourir tes dossiers et sous-dossiers."
+                text = "galleryFlows a besoin de l'accès à tous les fichiers pour parcourir tes dossiers et sous-dossiers."
                 textSize = 16f; gravity = Gravity.CENTER; setTextColor(WHITE)
             })
             addView(Button(this@MainActivity).apply {
@@ -155,9 +167,10 @@ class MainActivity : Base() {
     /** The added root that [d] lives under (the deepest one if roots are nested). */
     private fun rootOf(d: File) = Prefs.roots.filter { d.path == it || d.path.startsWith("$it/") }.maxByOrNull { it.length }?.let(::File) ?: d
 
-    private fun go(f: File?, to: Mode = Mode.BROWSE) {
+    private fun go(f: File?, to: Mode = Mode.BROWSE, back: Boolean = false) {
         scrollMemory[key()] = list.firstVisiblePosition
         dir = f; mode = to
+        slideFrom = if (back) -1 else 1
         selected.clear()
         search.text.clear(); handler.removeCallbacks(searchLater)
         load()
@@ -170,8 +183,8 @@ class MainActivity : Base() {
             !built -> super.onBackPressed()
             selected.isNotEmpty() -> { selected.clear(); updateSelection() }
             search.text.isNotEmpty() -> search.text.clear()
-            mode != Mode.BROWSE -> go(null)
-            d != null -> go(if (d.path == rootOf(d).path) null else d.parentFile)
+            mode != Mode.BROWSE -> go(null, back = true)
+            d != null -> go(if (d.path == rootOf(d).path) null else d.parentFile, back = true)
             else -> super.onBackPressed()
         }
     }
@@ -189,13 +202,13 @@ class MainActivity : Base() {
         }
         crumbs.removeAllViews()
         crumbScroll.visibility = if (inside) View.VISIBLE else View.GONE
-        crumb("Galerie") { go(null) }
+        crumb("Galerie") { go(null, back = true) }
         if (mode == Mode.FAVORITES) crumb("Favoris") {}
         if (mode == Mode.TRASH) crumb("Corbeille") {}
         if (d != null) {
             val root = rootOf(d)
             generateSequence(d) { it.parentFile }.takeWhile { it.path.length >= root.path.length }
-                .toList().asReversed().forEach { f -> crumb(f.name) { go(f) } }
+                .toList().asReversed().forEach { f -> crumb(f.name) { go(f, back = f != d) } }
         }
         (crumbs.getChildAt(crumbs.childCount - 1) as TextView).setTextColor(ACCENT)
         crumbScroll.post { crumbScroll.fullScroll(View.FOCUS_RIGHT) }
@@ -264,6 +277,11 @@ class MainActivity : Base() {
         else cards.chunked(Prefs.folderCols) + files.chunked(Prefs.mediaCols)
         adapter.notifyDataSetChanged()
         if (!keepScroll) list.setSelection(scrollMemory[key()] ?: 0)
+        if (slideFrom != 0) {
+            list.alpha = 0f; list.translationX = dp(48) * slideFrom.toFloat()
+            list.animate().alpha(1f).translationX(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            slideFrom = 0
+        }
         status.text = listOfNotNull(
             cards.size.takeIf { it > 0 }?.let { "$it dossier(s)" },
             files.size.takeIf { it > 0 }?.let { "$it fichier(s)" },
@@ -290,7 +308,7 @@ class MainActivity : Base() {
                 when (val item = row[0]) {
                     is Card -> bindLine(v, item.info.cover, item.name, "${item.info.count} fichier(s)", item.pinned, false,
                         { item.open() }, { item.options?.invoke(); item.options != null })
-                    is File -> bindLine(v, item, item.name, details(item), false, item in selected, { tap(item) }, { toggle(item); true })
+                    is File -> bindLine(v, item, item.name, details(item), false, item in selected, { tap(item, v) }, { toggle(item); true })
                 }
                 return v
             }
@@ -335,7 +353,7 @@ class MainActivity : Base() {
         (texts.getChildAt(0) as TextView).text = title
         (texts.getChildAt(1) as TextView).text = sub
         v.getChildAt(2).visibility = if (pinned) View.VISIBLE else View.GONE
-        v.background = if (isSelected) ColorDrawable(0x66f57c00) else null
+        v.background = if (isSelected) ColorDrawable(0x66f57c00) else ripple()
         v.setOnClickListener { click() }
         v.setOnLongClickListener { long() }
     }
@@ -343,6 +361,7 @@ class MainActivity : Base() {
     private fun folderCell() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(12))
         addView(FrameLayout(this@MainActivity).apply {
+            foreground = ripple(rounded(WHITE, 16))
             addView(SquareImageView(this@MainActivity).apply { clipToOutline = true })
             addView(ImageView(this@MainActivity).apply {
                 setImageResource(R.drawable.ic_pin); background = rounded(0x66000000, 16); setPadding(dp(6), dp(6), dp(6), dp(6))
@@ -367,10 +386,12 @@ class MainActivity : Base() {
 
     private fun mediaCell() = FrameLayout(this).apply {
         setPadding(dp(1), dp(1), dp(1), dp(1))
+        foreground = ripple()
         addView(SquareImageView(this@MainActivity))
         addView(ImageView(this@MainActivity).apply {
             setImageResource(R.drawable.ic_play); background = rounded(0x66000000, 18); setPadding(dp(6), dp(6), dp(6), dp(6))
         }, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
+        addView(View(this@MainActivity).apply { setBackgroundColor(0x88f57c00.toInt()); visibility = View.GONE }, FrameLayout.LayoutParams(-1, -1)) // selected
     }
 
     private fun bindMedia(cell: FrameLayout, f: File) {
@@ -378,18 +399,25 @@ class MainActivity : Base() {
         img.scaleType = if (Prefs.cropThumbs) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.FIT_CENTER
         Thumbs.load(img, f)
         cell.getChildAt(1).visibility = if (kindOf(f.name) == Kind.VIDEO) View.VISIBLE else View.GONE
-        cell.foreground = if (f in selected) ColorDrawable(0x88f57c00.toInt()) else null
-        cell.setOnClickListener { tap(f) }
+        val sel = cell.getChildAt(2)
+        val on = f in selected
+        if (on != (sel.visibility == View.VISIBLE)) {
+            sel.visibility = if (on) View.VISIBLE else View.GONE
+            // the picture shrinks a little while selected
+            img.animate().scaleX(if (on) .88f else 1f).scaleY(if (on) .88f else 1f).setDuration(150).start()
+        }
+        cell.setOnClickListener { tap(f, cell) }
         cell.setOnLongClickListener { toggle(f); true }
     }
 
-    private fun tap(f: File) {
+    private fun tap(f: File, from: View) {
         when {
             selected.isNotEmpty() -> toggle(f)
             picking && !pickMultiple -> returnPicked(listOf(f))
             else -> {
                 Session.items = media
-                startActivity(Intent(this, ViewerActivity::class.java).putExtra("pos", media.indexOf(f)).putExtra("trash", mode == Mode.TRASH))
+                startActivity(Intent(this, ViewerActivity::class.java).putExtra("pos", media.indexOf(f)).putExtra("trash", mode == Mode.TRASH),
+                    ActivityOptions.makeScaleUpAnimation(from, 0, 0, from.width, from.height).toBundle()) // grows out of the thumbnail
             }
         }
     }

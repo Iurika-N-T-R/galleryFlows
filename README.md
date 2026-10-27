@@ -1,13 +1,13 @@
-# galleryflows
+# galleryFlows
 
 Free, open-source gallery for Android that browses your **real folder tree**: Folder › Subfolder › Subfolder › … › Images.
 
 [![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![release](https://img.shields.io/github/v/release/Iurika-N-T-R/galleryflows?style=flat-square)](../../releases/latest)
 
-Most galleries show one flat list of every folder that holds pictures: `Camera`, `Screenshots`, `Wallpapers`… and you never see how they are nested. galleryflows starts from the folders you choose and lets you walk down them level by level, like a file manager that only shows your media.
+Most galleries show one flat list of every folder that holds pictures: `Camera`, `Screenshots`, `Wallpapers`… and you never see how they are nested. galleryFlows starts from the folders you choose and lets you walk down them level by level, like a file manager that only shows your media.
 
-galleryflows is an independent app written from scratch, with no dependencies. It is not affiliated with Fossify or Simple Mobile Tools. It has no internet permission: nothing leaves your phone.
+galleryFlows is an independent app written from scratch, with no dependencies. It is not affiliated with Fossify or Simple Mobile Tools. It has no internet permission: nothing leaves your phone.
 
 ## Using it
 **Main screen**: your favorites, the folders you added (DCIM and Pictures at first), and the trash. **⋮ → Ajouter un dossier** adds any folder from internal storage or the SD card.
@@ -33,12 +33,12 @@ galleryflows is an independent app written from scratch, with no dependencies. I
 
 **Settings**: thumbnails (square crop, rounded folders), videos, fullscreen (max brightness, auto-hide, tap the sides to change media, swipe down to close, details overlay, slideshow speed), security (lock the app, hidden items, or delete / move operations behind your fingerprint, face or PIN), file operations, trash, thumbnail cache, export / import of all settings as JSON.
 
-**With other apps**: "Open with galleryflows" opens a file and lets you swipe through the rest of its folder; apps that ask for a picture or a video can use galleryflows as the picker.
+**With other apps**: "Open with galleryFlows" opens a file and lets you swipe through the rest of its folder; apps that ask for a picture or a video can use galleryFlows as the picker.
 
 ## Install
 Download the APK from the [latest release](../../releases/latest). Needs Android 11+.
 
-On first launch, allow **access to all files**: galleryflows reads folders directly (internal storage and SD card) instead of going through the system media index, which is what makes the folder tree possible.
+On first launch, allow **access to all files**: galleryFlows reads folders directly (internal storage and SD card) instead of going through the system media index, which is what makes the folder tree possible.
 
 ## Build
 ```
@@ -58,4 +58,4 @@ keyPassword=…
 - `USE_BIOMETRIC`: the optional app lock.
 
 ## License
-galleryflows is MIT-licensed (see [LICENSE](LICENSE)).
+galleryFlows is MIT-licensed (see [LICENSE](LICENSE)).
