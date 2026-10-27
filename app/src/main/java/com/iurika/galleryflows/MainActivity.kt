@@ -316,8 +316,11 @@ class MainActivity : Base() {
         if (leaving) { whenLeft = { show(cards, files, keepScroll) }; return }
         media = files
         selected.retainAll(files.toSet())
-        rows = if (Prefs.listView) (cards + files).map { listOf(it) }
-        else cards.chunked(Prefs.folderCols) + files.chunked(Prefs.mediaCols)
+        // Folders and files in the same place: a labelled break above each part
+        val both = cards.isNotEmpty() && files.isNotEmpty()
+        fun head(label: String, n: Int) = if (both) listOf(listOf<Any>("$label · $n")) else emptyList()
+        rows = if (Prefs.listView) head("Dossiers", cards.size) + cards.map { listOf(it) } + head("Fichiers", files.size) + files.map { listOf(it) }
+        else head("Dossiers", cards.size) + cards.chunked(Prefs.folderCols) + head("Fichiers", files.size) + files.chunked(Prefs.mediaCols)
         adapter.notifyDataSetChanged()
         if (!keepScroll) list.setSelection(scrollMemory[key()] ?: 0)
         if (slideFrom != 0) {
@@ -341,11 +344,20 @@ class MainActivity : Base() {
         override fun getCount() = rows.size
         override fun getItem(p: Int) = rows[p]
         override fun getItemId(p: Int) = p.toLong()
-        override fun getViewTypeCount() = 3
-        override fun getItemViewType(p: Int) = when { Prefs.listView -> 2; rows[p][0] is Card -> 0; else -> 1 }
+        override fun getViewTypeCount() = 4
+        override fun getItemViewType(p: Int) = when { rows[p][0] is String -> 3; Prefs.listView -> 2; rows[p][0] is Card -> 0; else -> 1 }
+        override fun isEnabled(p: Int) = rows[p][0] !is String
 
         override fun getView(p: Int, convert: View?, parent: ViewGroup): View {
             val row = rows[p]
+            (row[0] as? String)?.let { label ->
+                val v = convert as? TextView ?: TextView(this@MainActivity).apply {
+                    setTextColor(GREY); textSize = 12f; typeface = Typeface.DEFAULT_BOLD; letterSpacing = .08f
+                    setPadding(dp(20), dp(18), dp(20), dp(8))
+                }
+                v.text = label.uppercase()
+                return v
+            }
             if (Prefs.listView) {
                 val v = (convert as? LinearLayout)?.takeIf { it.tag == "line" } ?: lineCell()
                 when (val item = row[0]) {
