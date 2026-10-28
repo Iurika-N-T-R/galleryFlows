@@ -20,7 +20,7 @@ galleryFlows is an independent app written from scratch, with no dependencies. I
 - **Long press** a media to select several: bookmark, share, copy, move, delete. Copy and move open "Sélectionner la destination": every folder with media as a card with its cover (recent destinations first), a search field, the eye for hidden folders; a tap picks the folder, "Autre dossier" browses to any other.
 - **Long press** a folder: pin it at the top, rename, hide it (`.nomedia`), exclude it, add it to the main screen, or create a home-screen shortcut to it.
 
-**Bookmarks** (the bookmark button next to the search bar opens the sidebar): long-press a folder, or select images, then "Ajouter à un bookmark" to put them in a bookmark such as *Art* or *Références*, new or existing. Opening a bookmark shows only its folders and images; from there you browse into them as usual, and Back comes back to the bookmark.
+**Bookmarks** (swipe right anywhere on the grid, or the bookmark button next to the search bar, opens the sidebar; swipe left closes it): long-press a folder, or select images, then "Ajouter à un bookmark" to put them in a bookmark such as *Art* or *Références*, new or existing. Opening a bookmark shows only its folders and images; from there you browse into them as usual, and Back comes back to the bookmark.
 
 **⋮ menu**: sort (name, location, dimensions, size, modified date, date taken, random, or custom: long-press items and put them first; ascending or descending), filter (images, videos, GIF, RAW, SVG, portrait shots), grid or list, 1 to 20 columns for folders and for media, show hidden files, new folder, shuffle, settings.
 

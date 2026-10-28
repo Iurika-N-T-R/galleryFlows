@@ -16,6 +16,9 @@ import android.content.pm.ShortcutManager
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.view.ViewConfiguration
+import kotlin.math.abs
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
@@ -817,11 +820,68 @@ class MainActivity : Base() {
 
     private fun openDrawer() {
         renderDrawer()
-        drawerOpen = true
         drawer.visibility = View.VISIBLE; scrim.visibility = View.VISIBLE
         drawer.translationX = -dp(300).toFloat()
+        drawerOpen = true
         drawer.animate().translationX(0f).setDuration(260).setInterpolator(standard).start()
         scrim.animate().alpha(1f).setDuration(260).start()
+    }
+
+    // ---- swipe the sidebar open (left to right) or shut (right to left) ----
+
+    private var swipeX = -1f // where the finger went down, -1 when the gesture isn't a candidate
+    private var swipeY = 0f
+    private var swiping = false
+    private var swipeVelocity: VelocityTracker? = null
+    private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
+
+    // Anywhere on the screen, since the grid only scrolls up and down; the very edge is the system's back gesture.
+    // Scrolling sideways, only from the left edge.
+    override fun dispatchTouchEvent(e: MotionEvent): Boolean {
+        if (!built || picking) return super.dispatchTouchEvent(e)
+        val w = dp(300).toFloat()
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swiping = false
+                swipeX = if (drawerOpen || !turn.on || e.x < dp(40)) e.x else -1f
+                swipeY = e.y
+                swipeVelocity?.recycle(); swipeVelocity = VelocityTracker.obtain()
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> if (!swiping) swipeX = -1f
+            MotionEvent.ACTION_MOVE -> if (!swiping && swipeX >= 0) {
+                val dx = e.x - swipeX
+                val dy = e.y - swipeY
+                if (abs(dx) > slop && abs(dx) > abs(dy) * 1.5f && (if (drawerOpen) dx < 0 else dx > 0)) {
+                    swiping = true
+                    swipeX = e.x
+                    if (!drawerOpen) { renderDrawer(); drawer.translationX = -w; scrim.alpha = 0f }
+                    drawer.visibility = View.VISIBLE; scrim.visibility = View.VISIBLE
+                    drawer.animate().cancel(); scrim.animate().cancel()
+                    val cancel = MotionEvent.obtain(e).apply { action = MotionEvent.ACTION_CANCEL }
+                    super.dispatchTouchEvent(cancel) // the grid stops seeing this gesture
+                    cancel.recycle()
+                } else if (abs(dy) > slop) swipeX = -1f // a scroll: not ours
+            }
+        }
+        swipeVelocity?.addMovement(e)
+        if (!swiping) return super.dispatchTouchEvent(e)
+        val start = if (drawerOpen) 0f else -w
+        val x = (start + e.x - swipeX).coerceIn(-w, 0f)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_MOVE -> { drawer.translationX = x; scrim.alpha = 1 + x / w }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val v = swipeVelocity!!.apply { computeCurrentVelocity(1000) }.xVelocity
+                val open = if (abs(v) > dp(500)) v > 0 else x > -w / 2
+                swiping = false
+                if (open) {
+                    if (!drawerOpen) renderDrawer()
+                    drawerOpen = true
+                    drawer.animate().translationX(0f).setDuration(200).setInterpolator(standard).start()
+                    scrim.animate().alpha(1f).setDuration(200).start()
+                } else closeDrawer()
+            }
+        }
+        return true
     }
 
     private fun closeDrawer() {

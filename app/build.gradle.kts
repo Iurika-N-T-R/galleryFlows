@@ -17,8 +17,8 @@ android {
         // 30: all-files access (MANAGE_EXTERNAL_STORAGE) and File-based ThumbnailUtils
         minSdk = 30
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.5.0"
+        versionCode = 7
+        versionName = "0.5.1"
     }
     signingConfigs {
         if (keystore != null) create("release") {
