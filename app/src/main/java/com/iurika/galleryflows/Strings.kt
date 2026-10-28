@@ -10,6 +10,22 @@ fun t(fr: String, vararg args: Any?): String {
 fun plural(n: Int, word: String) = "$n ${t(word)}" + if (n > 1) "s" else ""
 
 private val EN = mapOf(
+    "Bookmarks" to "Bookmarks",
+    "Retirer de « %s »" to "Remove from \"%s\"",
+    "Ajouter à un bookmark…" to "Add to a bookmark…",
+    "Ajouter à un bookmark" to "Add to a bookmark",
+    "Ajouté à « %s »" to "Added to \"%s\"",
+    "Nouveau bookmark…" to "New bookmark…",
+    "Nouveau bookmark" to "New bookmark",
+    "« %s » existe déjà" to "\"%s\" already exists",
+    "Appui long sur un dossier, puis « Ajouter à un bookmark », pour regrouper des dossiers et des images." to "Long-press a folder, then \"Add to a bookmark\", to group folders and images.",
+    "Supprimer le bookmark" to "Delete the bookmark",
+    "Supprimer le bookmark « %s » ? Les dossiers et les images ne sont pas touchés." to "Delete the bookmark \"%s\"? Its folders and images stay where they are.",
+    "Déplacer dans « %s »" to "Move to \"%s\"",
+    "Copier dans « %s »" to "Copy to \"%s\"",
+    "Récents" to "Recent",
+    "Galeries" to "Galleries",
+    "Pas de sous-dossier ici" to "No subfolder here",
     "fichier" to "file",
     "dossier" to "folder",
     "colonne" to "column",

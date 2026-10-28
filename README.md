@@ -14,10 +14,13 @@ galleryFlows is an independent app written from scratch, with no dependencies. I
 
 **Inside a folder**
 - Subfolders come first, as cards with a cover and the number of media in the **whole subtree**; then the folder's own pictures and videos. Folders with no media anywhere below them are left out.
+- A folder with nothing of its own but a single subfolder opens straight into that subfolder (as many levels down as it goes); Back skips them on the way up too.
 - The **breadcrumb** (`Galerie › Pictures › Media › Selfgrow`) jumps back to any level; Back goes up one level and keeps your scroll position.
 - **Search** looks through the current folder and everything below it, for files or (a setting) for folders.
-- **Long press** a media to select several: share, copy, move, delete.
+- **Long press** a media to select several: bookmark, share, copy, move, delete. Copy and move open a picker showing your recent destinations, galleries and bookmarked folders as cards with their cover; tap into a folder, then the button at the bottom.
 - **Long press** a folder: pin it at the top, rename, hide it (`.nomedia`), exclude it, add it to the main screen, or create a home-screen shortcut to it.
+
+**Bookmarks** (the bookmark button next to the search bar opens the sidebar): long-press a folder, or select images, then "Ajouter à un bookmark" to put them in a bookmark such as *Art* or *Références*, new or existing. Opening a bookmark shows only its folders and images; from there you browse into them as usual, and Back comes back to the bookmark.
 
 **⋮ menu**: sort (name, location, dimensions, size, modified date, date taken, random, or custom: long-press items and put them first; ascending or descending), filter (images, videos, GIF, RAW, SVG, portrait shots), grid or list, 1 to 20 columns for folders and for media, show hidden files, new folder, shuffle, settings.
 

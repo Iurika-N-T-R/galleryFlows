@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.RectF
 import android.os.Environment
 import android.provider.MediaStore
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -119,6 +120,10 @@ object Prefs {
         set(v) { field = v; put("pinned", v) }
     var custom: List<String> = emptyList() // "Personnalisé" order: these paths first, in this order
         set(v) { field = v.distinct().take(5000); put("custom", field) }
+    var targets: List<String> = emptyList() // last copy / move destinations, newest first
+        set(v) { field = v.distinct().take(6); put("targets", field) }
+    var bookmarks: Map<String, List<String>> = emptyMap() // name -> folders and files, in the order added
+        set(v) { field = v; sp.edit().putString("bookmarks", JSONObject(v.mapValues { JSONArray(it.value) }).toString()).apply() }
     var actions: List<String> = emptyList() // viewer bottom bar, keys of VIEWER_ACTIONS
         set(v) { field = v; put("actions", v) }
     var trash: Map<String, TrashEntry> = emptyMap() // trashed path -> where it came from
@@ -145,6 +150,11 @@ object Prefs {
         excluded = strings("excluded").toSet()
         pinned = strings("pinned").toSet()
         custom = strings("custom")
+        targets = strings("targets")
+        bookmarks = runCatching {
+            val o = JSONObject(sp.getString("bookmarks", null) ?: "{}")
+            o.keys().asSequence().associateWith { k -> o.getJSONArray(k).let { a -> List(a.length(), a::getString) } }
+        }.getOrDefault(emptyMap())
         actions = if (sp.contains("actions")) strings("actions") else listOf("favorite", "edit", "share", "delete", "info")
         trash = strings("trash").mapNotNull { line ->
             line.split('\t').takeIf { it.size == 3 }?.let { (t, o, time) -> t to TrashEntry(o, time.toLongOrNull() ?: 0) }
@@ -156,6 +166,7 @@ object Prefs {
         if (old.path in pinned) pinned = pinned - old.path + new.path
         if (old.path in roots) roots = roots.map { if (it == old.path) new.path else it }
         if (old.path in custom) custom = custom.map { if (it == old.path) new.path else it }
+        if (bookmarks.values.any { old.path in it }) bookmarks = bookmarks.mapValues { (_, l) -> l.map { if (it == old.path) new.path else it } }
     }
 
     fun position(f: File) = positions.getInt(f.path, 0)

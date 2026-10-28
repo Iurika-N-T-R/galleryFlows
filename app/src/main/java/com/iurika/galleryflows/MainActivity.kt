@@ -48,12 +48,13 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class MainActivity : Base() {
-    private enum class Mode { BROWSE, FAVORITES, TRASH }
+    private enum class Mode { BROWSE, FAVORITES, TRASH, BOOKMARK }
 
     private class Card(val name: String, val info: Info, val pinned: Boolean, val open: () -> Unit, val options: (() -> Unit)?)
 
     private var dir: File? = null      // null = the roots screen (in BROWSE mode)
     private var mode = Mode.BROWSE
+    private var bookmark: String? = null // opened from the sidebar: its folders stand in for the roots until "Galerie"
     private var rows: List<List<Any>> = emptyList() // each row holds Cards (folders) or Files (media)
     private var media: List<File> = emptyList()
     private val selected = LinkedHashSet<File>()
@@ -81,6 +82,9 @@ class MainActivity : Base() {
     private lateinit var status: TextView
     private lateinit var list: ListView
     private lateinit var turn: Turn
+    private lateinit var drawer: LinearLayout
+    private lateinit var scrim: View
+    private var drawerOpen = false
     private lateinit var pullIcon: ImageView
     private var pullFrom = -1f // where a pull-to-refresh drag started, -1 when none
     private lateinit var selectionBar: LinearLayout
@@ -146,6 +150,7 @@ class MainActivity : Base() {
             gravity = Gravity.CENTER_VERTICAL; background = rounded(BAR, 28); setPadding(dp(4), 0, dp(4), 0)
             addView(back, LP(dp(48), dp(48)))
             addView(search, LP(0, -2, 1f))
+            if (!picking) addView(icon(R.drawable.ic_bookmarks) { openDrawer() }.apply { contentDescription = t("Bookmarks") }, LP(dp(48), dp(48)))
             addView(icon(R.drawable.ic_more) { menu(it) }, LP(dp(48), dp(48)))
         }
         crumbs = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
@@ -165,6 +170,9 @@ class MainActivity : Base() {
         list = ListView(this).apply {
             adapter = this@MainActivity.adapter
             divider = null; dividerHeight = 0; selector = ColorDrawable(0); isFastScrollEnabled = true
+            // Android 12+ "stretch" overscroll: while it springs back, the list keeps the next tap to catch it,
+            // so a thumbnail tapped just after scrolling back to the top (the first row) did nothing
+            overScrollMode = View.OVER_SCROLL_NEVER
             setOnTouchListener { _, e -> pull(e); false }
         }
         turn = Turn(this).apply { addView(list) }
@@ -178,12 +186,22 @@ class MainActivity : Base() {
             addView(status)
             addView(turn, LP(-1, 0, 1f))
             addView(selectionBar, LP(-1, -2))
-            setOnApplyWindowInsetsListener { v, ins ->
-                val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
-                v.setPadding(b.left, b.top, b.right, b.bottom); ins
-            }
         }
-        setContentView(root)
+        scrim = View(this).apply { setBackgroundColor(0x99000000.toInt()); alpha = 0f; visibility = View.GONE; setOnClickListener { closeDrawer() } }
+        drawer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; visibility = View.GONE; isClickable = true
+            background = GradientDrawable().apply { setColor(blend(WHITE, BG, .06f)); cornerRadii = FloatArray(8) { i -> if (i in 2..5) dp(24).toFloat() else 0f } }
+        }
+        setContentView(FrameLayout(this).apply {
+            addView(root)
+            addView(scrim, FrameLayout.LayoutParams(-1, -1))
+            addView(drawer, FrameLayout.LayoutParams(dp(300), -1))
+            setOnApplyWindowInsetsListener { _, ins ->
+                val b = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+                root.setPadding(b.left, b.top, b.right, b.bottom)
+                drawer.setPadding(b.left, b.top + dp(12), 0, b.bottom); ins
+            }
+        })
         Session.locate = ::locate
     }
 
@@ -199,14 +217,39 @@ class MainActivity : Base() {
 
     // ---- navigation ----
 
-    private fun key() = when (mode) { Mode.FAVORITES -> "★"; Mode.TRASH -> "🗑"; else -> dir?.path ?: "" }
+    private fun key() = when (mode) { Mode.FAVORITES -> "★"; Mode.TRASH -> "🗑"; Mode.BOOKMARK -> "#$bookmark"; else -> dir?.path ?: "" }
 
-    /** The added root that [d] lives under (the deepest one if roots are nested). */
-    private fun rootOf(d: File) = Prefs.roots.filter { d.path == it || d.path.startsWith("$it/") }.maxByOrNull { it.length }?.let(::File) ?: d
+    private fun marked() = bookmark?.let { Prefs.bookmarks[it] }.orEmpty().map(::File).filter { it.exists() }
+
+    /** Where going up stops: the added roots, or the open bookmark's folders. */
+    private fun bases() = if (bookmark != null) marked().filter { it.isDirectory } else Prefs.roots.map(::File)
+
+    /** The base that [d] lives under (the deepest one if they're nested). */
+    private fun rootOf(d: File) = bases().filter { d.path == it.path || d.path.startsWith("${it.path}/") }.maxByOrNull { it.path.length } ?: d
+
+    /** A folder with no media of its own and a single subfolder holding some: that subfolder, else null. */
+    private fun lone(d: File): File? {
+        val (dirs, media) = Scan.children(d)
+        return if (media.isNotEmpty()) null else dirs.filter { Scan.info(it).count > 0 }.singleOrNull()
+    }
+
+    // Opening such a folder shows its subfolder straight away, as many levels down as it goes
+    private fun skipDown(f: File): File { var d = f; repeat(32) { d = lone(d) ?: return d }; return d }
+
+    /** One level up from [d], over the folders [skipDown] goes through; null = the top (roots or bookmark). */
+    private fun up(d: File): File? {
+        var p = d
+        while (true) {
+            if (p.path == rootOf(p).path) return null
+            p = p.parentFile ?: return null
+            if (lone(p) == null) return p
+        }
+    }
 
     private fun go(f: File?, to: Mode = Mode.BROWSE, back: Boolean = false) {
         scrollMemory[key()] = list.firstVisiblePosition
-        dir = f; mode = to
+        if (f == null && to == Mode.BROWSE) bookmark = null
+        dir = if (f != null && !back) skipDown(f) else f; mode = to
         slideFrom = if (back) -1 else 1
         leave()
         selected.clear()
@@ -229,10 +272,11 @@ class MainActivity : Base() {
         val d = dir
         when {
             !built -> super.onBackPressed()
+            drawerOpen -> closeDrawer()
             selected.isNotEmpty() -> { selected.clear(); updateSelection() }
             search.text.isNotEmpty() -> search.text.clear()
             mode != Mode.BROWSE -> go(null, back = true)
-            d != null -> go(if (d.path == rootOf(d).path) null else d.parentFile, back = true)
+            d != null -> up(d).let { if (it == null && bookmark != null) go(null, Mode.BOOKMARK, back = true) else go(it, back = true) }
             else -> super.onBackPressed()
         }
     }
@@ -244,20 +288,25 @@ class MainActivity : Base() {
         search.hint = when {
             mode == Mode.FAVORITES -> t("Rechercher dans Favoris")
             mode == Mode.TRASH -> t("Rechercher dans la corbeille")
+            mode == Mode.BOOKMARK -> t("Rechercher dans %s", bookmark)
             d != null -> t("Rechercher dans %s", d.name)
             picking -> t("Choisir un fichier")
             !Prefs.searchFiles -> t("Rechercher des dossiers")
             else -> t("Rechercher des fichiers")
         }
         // Big title for where we are; the way back up is a small path above it
-        title.text = when { mode == Mode.FAVORITES -> t("Favoris"); mode == Mode.TRASH -> t("Corbeille"); d != null -> d.name; else -> t("Galerie") }
+        title.text = when { mode == Mode.FAVORITES -> t("Favoris"); mode == Mode.TRASH -> t("Corbeille"); mode == Mode.BOOKMARK -> bookmark; d != null -> d.name; else -> t("Galerie") }
         shuffleButton.visibility = if (mode == Mode.TRASH || picking) View.GONE else View.VISIBLE
         crumbs.removeAllViews()
         crumbScroll.visibility = if (inside) View.VISIBLE else View.GONE
         crumb(t("Galerie")) { go(null, back = true) }
+        val b = bookmark
+        if (b != null && mode == Mode.BROWSE) crumb(b) { go(null, Mode.BOOKMARK, back = true) }
         if (d != null) {
             val root = rootOf(d)
+            // the folders opening skips over aren't places of their own
             generateSequence(d.parentFile) { it.parentFile }.takeWhile { it.path.length >= root.path.length }
+                .filter { lone(it) == null }
                 .toList().asReversed().forEach { f -> crumb(f.name) { go(f, back = true) } }
         }
         crumbScroll.post { crumbScroll.fullScroll(View.FOCUS_RIGHT) }
@@ -312,13 +361,19 @@ class MainActivity : Base() {
             var files: List<File> = when {
                 m == Mode.FAVORITES -> Scan.sortFiles(Prefs.favorites.map(::File).filter { it.exists() })
                 m == Mode.TRASH -> Trash.items()
-                q.isNotEmpty() && m == Mode.BROWSE && !Prefs.searchFiles -> {
-                    cards = Scan.searchFolders(listOfNotNull(d).ifEmpty { Prefs.roots.map(::File) }, q).map { f ->
+                q.isNotEmpty() && !Prefs.searchFiles && (m == Mode.BROWSE || m == Mode.BOOKMARK) -> {
+                    cards = Scan.searchFolders(listOfNotNull(d).ifEmpty { bases() }, q).map { f ->
                         Card(f.name, Scan.info(f), f.path in Prefs.pinned, { go(f) }, { folderOptions(f) })
                     }
                     emptyList()
                 }
-                q.isNotEmpty() -> Scan.search(listOfNotNull(d).ifEmpty { Prefs.roots.map(::File) }, q)
+                q.isNotEmpty() && m == Mode.BOOKMARK -> Scan.sortFiles((Scan.search(bases(), q) + marked().filter { it.isFile && it.name.contains(q, true) }).distinct())
+                q.isNotEmpty() -> Scan.search(listOfNotNull(d).ifEmpty { bases() }, q)
+                m == Mode.BOOKMARK -> {
+                    val (dirs, found) = marked().partition { it.isDirectory }
+                    cards = Scan.sortFolders(dirs).map { f -> Card(f.name, Scan.info(f), f.path in Prefs.pinned, { go(f) }, { folderOptions(f) }) }
+                    Scan.sortFiles(found)
+                }
                 d == null -> { cards = rootCards(); emptyList() }
                 else -> {
                     val (dirs, found) = Scan.children(d)
@@ -329,7 +384,7 @@ class MainActivity : Base() {
                     Scan.sortFiles(found)
                 }
             }
-            if (q.isNotEmpty() && m != Mode.BROWSE) files = files.filter { it.name.contains(q, true) }
+            if (q.isNotEmpty() && (m == Mode.FAVORITES || m == Mode.TRASH)) files = files.filter { it.name.contains(q, true) }
             pickType?.let { t -> files = files.filter { mimeMatches(mimeOf(it), t) } }
             runOnUiThread { if (gen == generation) show(cards, files, keepScroll) }
         }
@@ -601,14 +656,16 @@ class MainActivity : Base() {
                 val n = amount.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 1
                 Prefs.slideSeconds = if (unit.checkedRadioButtonId == min.id) n * 60 else n
                 Prefs.shuffleSub = scope.checkedRadioButtonId == deep.id
-                val sources = if (d != null) listOf(d) else Prefs.roots.map(::File)
+                val sources = if (d != null) listOf(d) else bases()
                 val sub = Prefs.shuffleSub
+                // a bookmark's own images go in with its folders
+                val loose = if (d == null && mode == Mode.BOOKMARK) marked().filter { it.isFile } else emptyList()
                 thread {
                     val files = when {
                         favorites -> media
-                        sub -> Scan.collect(sources)
-                        else -> sources.flatMap { Scan.children(it).second }
-                    }.shuffled()
+                        sub -> Scan.collect(sources) + loose
+                        else -> sources.flatMap { Scan.children(it).second } + loose
+                    }.distinct().shuffled()
                     runOnUiThread {
                         if (files.isEmpty()) return@runOnUiThread toast("Aucun média ici")
                         Session.items = files
@@ -654,9 +711,10 @@ class MainActivity : Base() {
             }
             else -> {
                 if (Prefs.sort == 7) selectionBar.addView(icon(R.drawable.ic_top) { placeFirst(selected.map { it.path }); selected.clear() })
+                selectionBar.addView(icon(R.drawable.ic_bookmark) { bookmarkOptions(selected.map { it.path }) })
                 selectionBar.addView(icon(R.drawable.ic_share) { share(selected) })
                 selectionBar.addView(icon(R.drawable.ic_copy) { transfer(move = false) })
-                selectionBar.addView(icon(R.drawable.ic_folder) { transfer(move = true) })
+                selectionBar.addView(icon(R.drawable.ic_move) { transfer(move = true) })
                 selectionBar.addView(icon(R.drawable.ic_delete) { deleteSelected() })
             }
         }
@@ -671,7 +729,7 @@ class MainActivity : Base() {
 
     private fun transfer(move: Boolean) {
         val files = selected.toList()
-        pickFolder(if (move) "Déplacer vers" else "Copier vers", dir) { dest ->
+        pickDestination(move) { dest ->
             guardOps { toast(if (move) "Déplacement…" else "Copie…"); runOp { Ops.transfer(this, files, dest, move) } }
         }
     }
@@ -693,6 +751,7 @@ class MainActivity : Base() {
     private fun folderOptions(f: File) = choose(f.name, listOfNotNull(
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
         if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
+        bookmarkEntry(f),
         "Renommer" to { ask("Renommer", f.name) { n -> runOp { if (Ops.rename(this, f, n) != null) "Renommé" else "Impossible de renommer" } } },
         (if (Scan.hasNomedia(f)) "Afficher (retirer .nomedia)" else "Cacher (ajouter .nomedia)") to { Ops.setHidden(f, !Scan.hasNomedia(f)); refresh() },
         "Exclure de la galerie" to { Prefs.excluded = Prefs.excluded + f.path; refresh() },
@@ -703,8 +762,123 @@ class MainActivity : Base() {
     private fun rootOptions(f: File) = choose(f.path, listOfNotNull(
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
         if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
+        bookmarkEntry(f),
         "Créer un raccourci" to { shortcut(f) },
         "Retirer de l'écran principal" to { Prefs.roots = Prefs.roots - f.path; load(keepScroll = true) },
+    ))
+
+    // ---- bookmarks ----
+
+    private fun bookmarkEntry(f: File): Pair<String, () -> Unit> {
+        val b = bookmark
+        return if (mode == Mode.BOOKMARK && b != null && f.path in Prefs.bookmarks[b].orEmpty()) t("Retirer de « %s »", b) to { unmark(b, listOf(f.path)) }
+        else t("Ajouter à un bookmark…") to { addToBookmark(listOf(f.path)) }
+    }
+
+    private fun bookmarkOptions(paths: List<String>) {
+        val b = bookmark
+        if (mode == Mode.BOOKMARK && b != null) choose(b, listOf(
+            t("Ajouter à un bookmark…") to { addToBookmark(paths) },
+            t("Retirer de « %s »", b) to { unmark(b, paths) },
+        )) else addToBookmark(paths)
+    }
+
+    /** Existing bookmarks to pick from, or a new one. */
+    private fun addToBookmark(paths: List<String>) {
+        val put = { name: String ->
+            Prefs.bookmarks = Prefs.bookmarks + (name to (Prefs.bookmarks[name].orEmpty() + paths).distinct())
+            toast(t("Ajouté à « %s »", name)); selected.clear(); updateSelection()
+        }
+        val names = Prefs.bookmarks.keys.toList()
+        if (names.isEmpty()) return newBookmark(put)
+        AlertDialog.Builder(this).setTitle(t("Ajouter à un bookmark"))
+            .setItems((names + "＋  " + t("Nouveau bookmark…")).toTypedArray()) { _, i -> if (i < names.size) put(names[i]) else newBookmark(put) }
+            .show()
+    }
+
+    private fun newBookmark(then: (String) -> Unit) = ask(t("Nouveau bookmark"), "") { name ->
+        if (name in Prefs.bookmarks) return@ask toast(t("« %s » existe déjà", name))
+        Prefs.bookmarks = Prefs.bookmarks + (name to emptyList())
+        then(name)
+    }
+
+    private fun unmark(b: String, paths: List<String>) {
+        Prefs.bookmarks = Prefs.bookmarks + (b to Prefs.bookmarks[b].orEmpty() - paths.toSet())
+        selected.clear(); load(keepScroll = true)
+    }
+
+    private fun openBookmark(name: String) {
+        closeDrawer()
+        bookmark = name
+        go(null, Mode.BOOKMARK)
+    }
+
+    // ---- sidebar ----
+
+    private fun openDrawer() {
+        renderDrawer()
+        drawerOpen = true
+        drawer.visibility = View.VISIBLE; scrim.visibility = View.VISIBLE
+        drawer.translationX = -dp(300).toFloat()
+        drawer.animate().translationX(0f).setDuration(260).setInterpolator(standard).start()
+        scrim.animate().alpha(1f).setDuration(260).start()
+    }
+
+    private fun closeDrawer() {
+        drawerOpen = false
+        drawer.animate().translationX(-dp(300).toFloat()).setDuration(200).setInterpolator(standard).withEndAction { drawer.visibility = View.GONE }.start()
+        scrim.animate().alpha(0f).setDuration(200).withEndAction { scrim.visibility = View.GONE }.start()
+    }
+
+    private fun renderDrawer() {
+        drawer.removeAllViews()
+        drawer.addView(TextView(this).apply {
+            text = "galleryFlows"; setTextColor(WHITE); textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setPadding(dp(24), dp(12), dp(24), dp(16))
+        })
+        val items = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        drawer.addView(android.widget.ScrollView(this).apply { addView(items) }, LP(-1, 0, 1f))
+        fun item(res: Int, label: String, count: Int?, on: Boolean, long: (() -> Unit)? = null, click: () -> Unit) = items.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), 0, dp(20), 0)
+            background = if (on) rounded(withAlpha(ACCENT, 0x33), 26) else ripple(rounded(WHITE, 26))
+            addView(ImageView(this@MainActivity).apply { setImageResource(res); setColorFilter(if (on) ACCENT else GREY) }, LP(dp(22), dp(22)))
+            addView(TextView(this@MainActivity).apply {
+                text = label; textSize = 15f; setTextColor(if (on) ACCENT else WHITE); setSingleLine(); ellipsize = TextUtils.TruncateAt.END
+            }, LP(0, -2, 1f).apply { marginStart = dp(16) })
+            count?.let { n -> addView(TextView(this@MainActivity).apply { text = "$n"; textSize = 13f; setTextColor(GREY) }) }
+            setOnClickListener { click() }
+            long?.let { l -> setOnLongClickListener { l(); true } }
+        }, LP(-1, dp(52)).apply { setMargins(dp(12), 0, dp(12), dp(2)) })
+        item(R.drawable.ic_image, t("Galerie"), null, mode == Mode.BROWSE && bookmark == null) { closeDrawer(); go(null) }
+        item(R.drawable.ic_star, t("Favoris"), Prefs.favorites.size, mode == Mode.FAVORITES) { closeDrawer(); bookmark = null; go(null, Mode.FAVORITES) }
+        items.addView(TextView(this).apply {
+            text = t("Bookmarks").uppercase(); setTextColor(GREY); textSize = 12f; typeface = Typeface.DEFAULT_BOLD; letterSpacing = .08f
+            setPadding(dp(28), dp(20), dp(24), dp(8))
+        })
+        for ((name, paths) in Prefs.bookmarks) item(R.drawable.ic_bookmark, name, paths.size, bookmark == name, { bookmarkMenu(name) }) { openBookmark(name) }
+        item(R.drawable.ic_plus, t("Nouveau bookmark…"), null, false) { newBookmark { renderDrawer() } }
+        if (Prefs.bookmarks.isEmpty()) items.addView(TextView(this).apply {
+            text = t("Appui long sur un dossier, puis « Ajouter à un bookmark », pour regrouper des dossiers et des images.")
+            setTextColor(GREY); textSize = 13f; setPadding(dp(28), dp(8), dp(24), dp(8))
+        })
+    }
+
+    private fun bookmarkMenu(name: String) = choose(name, listOf(
+        t("Renommer") to {
+            ask(t("Renommer"), name) { n ->
+                if (n == name) return@ask
+                if (n in Prefs.bookmarks) return@ask toast(t("« %s » existe déjà", n))
+                Prefs.bookmarks = Prefs.bookmarks.entries.associate { (k, v) -> (if (k == name) n else k) to v }
+                if (bookmark == name) bookmark = n
+                renderDrawer(); renderHeader()
+            }
+        },
+        t("Supprimer le bookmark") to {
+            confirm(t("Supprimer le bookmark « %s » ? Les dossiers et les images ne sont pas touchés.", name)) {
+                Prefs.bookmarks = Prefs.bookmarks - name
+                renderDrawer()
+                if (bookmark == name) go(null)
+            }
+        },
     ))
 
     private fun togglePin(f: File) {

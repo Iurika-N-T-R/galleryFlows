@@ -120,6 +120,7 @@ class ViewerActivity : Base() {
     private var velocity: VelocityTracker? = null
     private val slop by lazy { ViewConfiguration.get(this).scaledTouchSlop }
     private val hideHint = Runnable { hint.visibility = View.GONE }
+    private var shownPlaying: Boolean? = null
     private val tick = object : Runnable {
         override fun run() {
             val v = video ?: return
@@ -129,7 +130,8 @@ class ViewerActivity : Base() {
                 timeNow.text = DateUtils.formatElapsedTime(v.currentPosition / 1000L)
                 timeEnd.text = DateUtils.formatElapsedTime(v.duration / 1000L)
             }
-            playPause.setImageResource(if (v.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            // only on a change: setting the icon inflates it again and lays the whole window out, every 250 ms, under the video
+            if (v.isPlaying != shownPlaying) { shownPlaying = v.isPlaying; playPause.setImageResource(if (v.isPlaying) R.drawable.ic_pause else R.drawable.ic_play) }
             handler.postDelayed(this, 250)
         }
     }
@@ -163,9 +165,9 @@ class ViewerActivity : Base() {
     private fun buildUi() {
         window.attributes = window.attributes.apply {
             if (Prefs.maxBrightness) screenBrightness = 1f
-            // "Afficher une encoche": pictures keep clear of the camera cutout; off, they use the whole screen
-            layoutInDisplayCutoutMode = if (Prefs.showNotch) WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-            else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            // always the whole screen: in the default mode the window dodges the camera cutout only while the status bar is
+            // hidden, so hiding the bars shrank it and the video jumped; "Afficher une encoche" is a fixed padding instead
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
         content = FrameLayout(this)
         title = TextView(this).apply { setTextColor(WHITE); textSize = 18f; setSingleLine(); ellipsize = TextUtils.TruncateAt.END }
@@ -183,8 +185,8 @@ class ViewerActivity : Base() {
         else Prefs.actions.mapNotNull { k -> VIEWER_ACTIONS.find { it.first == k } }.map { (k, label, res) ->
             icon(res) { act(k) }.apply { contentDescription = t(label); if (k == "favorite") star = this }
         }
-        timeNow = TextView(this).apply { setTextColor(WHITE); textSize = 13f }
-        timeEnd = TextView(this).apply { setTextColor(WHITE); textSize = 13f }
+        timeNow = TextView(this).apply { setTextColor(WHITE); textSize = 13f; gravity = Gravity.CENTER; setSingleLine() }
+        timeEnd = TextView(this).apply { setTextColor(WHITE); textSize = 13f; gravity = Gravity.CENTER; setSingleLine() }
         seek = SeekBar(this).apply {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar, p: Int, user: Boolean) { if (user) video?.seekTo(p) }
@@ -196,9 +198,9 @@ class ViewerActivity : Base() {
         videoRow = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE; setPadding(dp(4), 0, dp(12), 0)
             addView(playPause, LP(dp(48), dp(48)))
-            addView(timeNow)
+            addView(timeNow, LP(dp(52), -2)) // fixed widths: the ticking times don't relayout the row
             addView(seek, LP(0, -2, 1f))
-            addView(timeEnd)
+            addView(timeEnd, LP(dp(52), -2))
         }
         details = TextView(this).apply { setTextColor(WHITE); textSize = 13f; setShadowLayer(4f, 0f, 0f, 0xff000000.toInt()); setPadding(dp(16), 0, dp(16), dp(4)) }
         bottomBar = LinearLayout(this).apply {
@@ -218,13 +220,18 @@ class ViewerActivity : Base() {
             addView(topBar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
             setOnApplyWindowInsetsListener { _, ins ->
-                val b = ins.getInsets(WindowInsets.Type.systemBars())
+                // ignoring visibility: hiding the system bars doesn't move the app's bars (no jump when they come back)
+                val b = ins.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars())
+                val c = ins.getInsetsIgnoringVisibility(WindowInsets.Type.displayCutout())
+                if (Prefs.showNotch) content.setPadding(c.left, c.top, c.right, c.bottom) else content.setPadding(0, 0, 0, 0)
                 topBar.setPadding(b.left, b.top, b.right, dp(8))
                 bottomBar.setPadding(b.left, dp(8), b.right, b.bottom)
                 ins
             }
         }
         setContentView(root)
+        // drawn behind the system bars at all times: hiding them doesn't resize the window, so the video doesn't jump
+        window.setDecorFitsSystemWindows(false)
         window.insetsController?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (Prefs.autoHideUi) toggleBars()
     }
@@ -380,9 +387,11 @@ class ViewerActivity : Base() {
 
     /** Where [bmp] sits fitted to the screen. */
     private fun fitted(bmp: Bitmap): RectF {
-        val w = root.width.toFloat(); val h = root.height.toFloat()
+        // inside content's padding (the notch), like the picture itself
+        val l = content.paddingLeft.toFloat(); val t = content.paddingTop.toFloat()
+        val w = root.width - l - content.paddingRight; val h = root.height - t - content.paddingBottom
         val s = min(w / bmp.width, h / bmp.height)
-        return RectF((w - bmp.width * s) / 2, (h - bmp.height * s) / 2, (w + bmp.width * s) / 2, (h + bmp.height * s) / 2)
+        return RectF((w - bmp.width * s) / 2, (h - bmp.height * s) / 2, (w + bmp.width * s) / 2, (h + bmp.height * s) / 2).apply { offset(l, t) }
     }
 
     /** [fit] grown to cover [thumb] and centered on it: the picture as a center-cropped thumbnail shows it. */
@@ -704,8 +713,12 @@ class ViewerActivity : Base() {
 
     private fun toggleBars() {
         barsVisible = !barsVisible
-        val vis = if (barsVisible) View.VISIBLE else View.GONE
-        topBar.visibility = vis; bottomBar.visibility = vis
+        // a fade, and INVISIBLE rather than GONE: nothing is laid out again under a playing video
+        for (bar in listOf(topBar, bottomBar)) {
+            bar.animate().cancel()
+            if (barsVisible) { bar.visibility = View.VISIBLE; bar.animate().alpha(1f).setDuration(180).start() }
+            else bar.animate().alpha(0f).setDuration(180).withEndAction { bar.visibility = View.INVISIBLE }.start()
+        }
         window.insetsController?.let { if (barsVisible) it.show(WindowInsets.Type.systemBars()) else it.hide(WindowInsets.Type.systemBars()) }
     }
 
@@ -756,7 +769,7 @@ class ViewerActivity : Base() {
 
     private fun transfer(move: Boolean) {
         val f = current()
-        pickFolder(if (move) "Déplacer vers" else "Copier vers", f.parentFile) { dest ->
+        pickDestination(move) { dest ->
             guardOps {
                 thread {
                     val msg = Ops.transfer(this, listOf(f), dest, move)
