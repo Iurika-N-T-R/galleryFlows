@@ -752,7 +752,7 @@ class MainActivity : Base() {
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
         if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
         bookmarkEntry(f),
-        "Renommer" to { ask("Renommer", f.name) { n -> runOp { if (Ops.rename(this, f, n) != null) "Renommé" else "Impossible de renommer" } } },
+        "Renommer" to { renameDialog(f) { n -> runOp { if (Ops.rename(this, f, n) != null) "Renommé" else "Impossible de renommer" } } },
         (if (Scan.hasNomedia(f)) "Afficher (retirer .nomedia)" else "Cacher (ajouter .nomedia)") to { Ops.setHidden(f, !Scan.hasNomedia(f)); refresh() },
         "Exclure de la galerie" to { Prefs.excluded = Prefs.excluded + f.path; refresh() },
         "Ajouter à l'écran principal" to { Prefs.roots = Prefs.roots + f.path; toast("Ajouté à l'écran principal") },

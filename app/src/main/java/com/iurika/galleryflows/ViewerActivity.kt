@@ -84,6 +84,7 @@ class ViewerActivity : Base() {
     private lateinit var timeNow: TextView
     private lateinit var timeEnd: TextView
     private var star: ImageView? = null // the favorite button, when the bar has it
+    private val rotateButton by lazy { icon(R.drawable.ic_rotate) { rotate() }.apply { contentDescription = t("Pivoter") } }
     private var brightFrom = 0f // screen brightness when a brightness drag started
     private var opaqueNow = false // turned opaque to force an orientation: no grid behind to shrink back into
     private var image: ZoomImageView? = null
@@ -175,6 +176,10 @@ class ViewerActivity : Base() {
             gravity = Gravity.CENTER_VERTICAL; background = shade(GradientDrawable.Orientation.TOP_BOTTOM)
             addView(icon(R.drawable.ic_back) { close() })
             addView(title, LP(0, -2, 1f))
+            if (!trashMode) {
+                addView(rotateButton)
+                addView(icon(R.drawable.ic_rename) { act("rename") }.apply { contentDescription = t("Renommer") })
+            }
             addView(icon(R.drawable.ic_more) { menu(it) })
         }
         val buttons = if (trashMode) listOf(
@@ -505,6 +510,7 @@ class ViewerActivity : Base() {
         handler.removeCallbacks(tick)
         val f = current()
         title.text = f.name
+        rotateButton.visibility = if (applies("rotate", f)) View.VISIBLE else View.GONE
         renderStar()
         renderDetails(f)
         when {
@@ -786,18 +792,22 @@ class ViewerActivity : Base() {
         show()
     }
 
+    // a small menu under the top bar's rotate button
     private fun rotate() {
         val f = current()
         if (!Images.writable(f)) return toast("Pivotement possible pour JPEG, PNG et WebP")
-        choose("Pivoter", listOf("Vers la droite" to 90, "Vers la gauche" to 270, "À 180°" to 180).map { (label, deg) ->
-            label to {
+        val turns = listOf("Pivoter à droite" to 90, "Pivoter à gauche" to 270, "Pivoter à 180°" to 180)
+        PopupMenu(this, if (rotateButton.isShown) rotateButton else topBar, Gravity.END).apply {
+            turns.forEachIndexed { i, (label, _) -> menu.add(0, i, i, t(label)) }
+            setOnMenuItemClickListener { item ->
                 thread {
-                    val ok = Images.rotate(this, f, deg)
+                    val ok = Images.rotate(this@ViewerActivity, f, turns[item.itemId].second)
                     runOnUiThread { if (ok) { Session.dirty = true; show() } else toast("Impossible de pivoter") }
                 }
-                Unit
+                true
             }
-        })
+            show()
+        }
     }
 
     private fun resize() {
@@ -833,7 +843,7 @@ class ViewerActivity : Base() {
             "slideshow" -> if (slideshow) stopSlideshow() else startSlideshow()
             "copy" -> transfer(move = false)
             "move" -> transfer(move = true)
-            "rename" -> ask(t("Renommer"), f.name, ::rename)
+            "rename" -> renameDialog(f, ::rename)
             "hide" -> if (Ops.rename(this, f, ".${f.name}") != null) removeCurrent() else toast(t("Impossible de cacher"))
             "open" -> openWith(f, Intent.ACTION_VIEW, t("Ouvrir avec"))
             "setas" -> openWith(f, Intent.ACTION_ATTACH_DATA, t("Définir en tant que"))
@@ -857,7 +867,7 @@ class ViewerActivity : Base() {
             t("Ouvrir avec") to { openWith(f, Intent.ACTION_VIEW, t("Ouvrir avec")) },
         ) else {
             // what the bottom bar doesn't already show
-            val inBar = if (Prefs.showActions) Prefs.actions.toSet() else emptySet()
+            val inBar = (if (Prefs.showActions) Prefs.actions.toSet() else emptySet()) + "rotate" + "rename" // those two sit in the top bar
             VIEWER_ACTIONS.filter { (k) -> k !in inBar && applies(k, f) }.map { (k, label) ->
                 val text = when {
                     k == "favorite" -> if (f.path in Prefs.favorites) "Retirer des favoris" else "Ajouter aux favoris"
@@ -892,33 +902,48 @@ class ViewerActivity : Base() {
 
     private fun info() {
         val f = current()
-        val lines = mutableListOf(
-            t("Nom : %s", f.name),
-            t("Dossier : %s", Trash.originalOf(f)?.let { File(it).parent } ?: f.parent),
-            t("Taille : %s", Formatter.formatFileSize(this, f.length())),
-            t("Modifié : %s", formatDate(f.lastModified())),
+        val rows = mutableListOf(
+            "Nom" to f.name,
+            "Emplacement" to (Trash.originalOf(f)?.let { File(it).parent } ?: f.parent.orEmpty()),
+            "Dimension" to Formatter.formatShortFileSize(this, f.length()),
         )
+        fun size(w: Int, h: Int) = "$w × $h (%.1f MP)".format(w * h / 1e6)
         runCatching {
             if (kindOf(f.name) == Kind.VIDEO) MediaMetadataRetriever().use { r ->
                 r.setDataSource(f.path)
-                val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
                 val ms = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
-                lines += t("Résolution : %s", "$w × $h")
-                lines += t("Durée : %s", DateUtils.formatElapsedTime(ms / 1000))
+                if (w > 0) rows += "Résolution" to size(w, h)
+                rows += "Durée" to DateUtils.formatElapsedTime(ms / 1000)
+                rows += "Date de modification" to formatDate(f.lastModified())
             } else {
-                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(f.path, o)
-                if (o.outWidth > 0) lines += t("Résolution : %s", "${o.outWidth} × ${o.outHeight}")
+                val (w, h) = Images.uprightSize(f)
+                if (w > 0) rows += "Résolution" to size(w, h)
+                rows += "Date de modification" to formatDate(f.lastModified())
                 val e = ExifInterface(f.path)
-                e.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)?.let { lines += t("Prise de vue : %s", it) }
+                e.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)?.let { taken ->
+                    val t = runCatching { java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).parse(taken)!!.time }.getOrNull()
+                    rows += "Date de prise de vue" to (t?.let { formatDate(it) } ?: taken)
+                }
                 listOfNotNull(e.getAttribute(ExifInterface.TAG_MAKE), e.getAttribute(ExifInterface.TAG_MODEL))
-                    .joinToString(" ").takeIf { it.isNotBlank() }?.let { lines += t("Appareil : %s", it) }
-                Images.latLong(f)?.let { lines += "GPS : %.5f, %.5f".format(it[0], it[1]) }
+                    .joinToString(" ").takeIf { it.isNotBlank() }?.let { rows += "Appareil photo" to it }
+                // "F/2.1  3.41mm  1/20s  ISO-1178"
+                val exposure = e.getAttributeDouble(ExifInterface.TAG_EXPOSURE_TIME, 0.0).takeIf { it > 0 }
+                    ?.let { if (it < 1) "1/${(1 / it).roundToInt()}s" else "%.1fs".format(it) }
+                val exif = listOfNotNull(
+                    e.getAttributeDouble(ExifInterface.TAG_F_NUMBER, 0.0).takeIf { it > 0 }?.let { "F/%.1f".format(it) },
+                    e.getAttributeDouble(ExifInterface.TAG_FOCAL_LENGTH, 0.0).takeIf { it > 0 }?.let { "%.2fmm".format(it) },
+                    exposure,
+                    @Suppress("DEPRECATION") e.getAttributeInt(ExifInterface.TAG_ISO_SPEED_RATINGS, 0).takeIf { it > 0 }?.let { "ISO-$it" },
+                )
+                if (exif.isNotEmpty()) rows += "EXIF" to exif.joinToString("  ")
+                Images.latLong(f)?.let { rows += "GPS" to "%.5f, %.5f".format(it[0], it[1]) }
             }
         }
-        AlertDialog.Builder(this).setTitle(t("Propriétés")).setMessage(lines.joinToString("\n\n")).setPositiveButton("OK", null).show()
+        properties(rows)
     }
+
 }
 
 /**

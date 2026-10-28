@@ -10,6 +10,19 @@ fun t(fr: String, vararg args: Any?): String {
 fun plural(n: Int, word: String) = "$n ${t(word)}" + if (n > 1) "s" else ""
 
 private val EN = mapOf(
+    "Sélectionner la destination" to "Select the destination",
+    "Autre dossier" to "Other folder",
+    "Aucun dossier" to "No folder",
+    "Titre" to "Title",
+    "Extension" to "Extension",
+    "Pivoter à droite" to "Rotate right",
+    "Pivoter à gauche" to "Rotate left",
+    "Pivoter à 180°" to "Rotate 180°",
+    "Résolution" to "Resolution",
+    "Durée" to "Duration",
+    "Appareil photo" to "Camera",
+    "EXIF" to "EXIF",
+    "GPS" to "GPS",
     "Bookmarks" to "Bookmarks",
     "Retirer de « %s »" to "Remove from \"%s\"",
     "Ajouter à un bookmark…" to "Add to a bookmark…",

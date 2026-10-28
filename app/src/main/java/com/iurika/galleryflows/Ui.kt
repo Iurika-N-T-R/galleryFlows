@@ -20,6 +20,10 @@ import java.util.Locale
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.StateListDrawable
+import android.widget.ScrollView
+import android.widget.TextView
 import android.graphics.drawable.RippleDrawable
 import android.os.storage.StorageManager
 import android.view.View
@@ -78,6 +82,7 @@ fun Context.toast(msg: String) = Toast.makeText(this, t(msg), Toast.LENGTH_SHORT
 
 fun Context.icon(res: Int, onClick: (View) -> Unit) = ImageView(this).apply {
     setImageResource(res)
+    scaleType = ImageView.ScaleType.CENTER_INSIDE // its own 24 dp at most: a wide button (the viewer's bar) must not blow it up
     val p = dp(13)
     setPadding(p, p, p, p)
     background = RippleDrawable(ColorStateList.valueOf(0x33ffffff), null, null)
@@ -93,10 +98,70 @@ class SquareImageView(c: Context) : ImageView(c) {
     override fun onMeasure(w: Int, h: Int) = super.onMeasure(w, w)
 }
 
+const val SHEET = 0xff262626.toInt() // dialogs
+
+/** Shows the dialog as a rounded card. */
+fun AlertDialog.Builder.showRounded(): AlertDialog = show().apply {
+    window?.setBackgroundDrawable(InsetDrawable(context.rounded(SHEET, 28), context.dp(24)))
+}
+
+/** An outlined text field with its label sitting on the outline. */
+fun Context.outlined(label: String, value: String): Pair<View, EditText> {
+    val input = EditText(this).apply {
+        setText(value); setSingleLine(); textSize = 16f; setTextColor(WHITE)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = StateListDrawable().apply {
+            fun box(color: Int, width: Int) = GradientDrawable().apply { cornerRadius = dp(6).toFloat(); setStroke(dp(width), color) }
+            addState(intArrayOf(android.R.attr.state_focused), box(ACCENT, 2))
+            addState(intArrayOf(), box(0xff6a6a6a.toInt(), 1))
+        }
+    }
+    val tag = TextView(this).apply { text = t(label); textSize = 12f; setTextColor(GREY); setBackgroundColor(SHEET); setPadding(dp(4), 0, dp(4), 0) }
+    input.setOnFocusChangeListener { _, on -> tag.setTextColor(if (on) ACCENT else GREY) }
+    val box = FrameLayout(this).apply {
+        addView(input, FrameLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        addView(tag, FrameLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
+    }
+    return box to input
+}
+
+/** "Renommer": the name and, for a file, its extension in a field of its own. */
+fun Context.renameDialog(f: File, onOk: (String) -> Unit) {
+    val ext = if (f.isFile) f.extension else ""
+    val (titleBox, title) = outlined("Titre", if (ext.isEmpty()) f.name else f.name.removeSuffix(".$ext"))
+    val (extBox, extension) = outlined("Extension", ext)
+    AlertDialog.Builder(this).setTitle(t("Renommer"))
+        .setView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(12), dp(24), 0)
+            addView(titleBox)
+            if (ext.isNotEmpty()) addView(extBox, LP(-1, -2).apply { topMargin = dp(16) })
+        })
+        .setPositiveButton("OK") { _, _ ->
+            val name = title.text.toString().trim()
+            val e = extension.text.toString().trim().trimStart('.')
+            if (name.isNotEmpty()) onOk(if (e.isEmpty()) name else "$name.$e")
+        }
+        .setNegativeButton(t("Annuler"), null).showRounded()
+    title.requestFocus(); title.selectAll()
+}
+
+/** "Propriétés": each value under its small grey label. */
+fun Context.properties(rows: List<Pair<String, String>>) {
+    val list = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(4), dp(24), dp(8))
+        for ((label, value) in rows) {
+            addView(TextView(this@properties).apply { text = t(label); textSize = 13f; setTextColor(GREY); setPadding(0, dp(10), 0, dp(2)) })
+            addView(TextView(this@properties).apply { text = value; textSize = 16f; setTextColor(WHITE); setTextIsSelectable(true) })
+        }
+    }
+    AlertDialog.Builder(this).setTitle(t("Propriétés")).setView(ScrollView(this).apply { addView(list) })
+        .setPositiveButton("OK", null).showRounded()
+}
+
 fun Context.confirm(msg: String, onOk: () -> Unit) {
     AlertDialog.Builder(this).setMessage(t(msg))
         .setPositiveButton("OK") { _, _ -> onOk() }
-        .setNegativeButton(t("Annuler"), null).show()
+        .setNegativeButton(t("Annuler"), null).showRounded()
 }
 
 fun Context.ask(title: String, initial: String, onOk: (String) -> Unit) {
@@ -107,12 +172,12 @@ fun Context.ask(title: String, initial: String, onOk: (String) -> Unit) {
     AlertDialog.Builder(this).setTitle(t(title))
         .setView(FrameLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(input) })
         .setPositiveButton("OK") { _, _ -> input.text.toString().trim().takeIf { it.isNotEmpty() }?.let(onOk) }
-        .setNegativeButton(t("Annuler"), null).show()
+        .setNegativeButton(t("Annuler"), null).showRounded()
 }
 
 fun Context.choose(title: String, options: List<Pair<String, () -> Unit>>) {
     AlertDialog.Builder(this).setTitle(t(title))
-        .setItems(options.map { t(it.first) }.toTypedArray()) { _, i -> options[i].second() }.show()
+        .setItems(options.map { t(it.first) }.toTypedArray()) { _, i -> options[i].second() }.showRounded()
 }
 
 /** Folder browser dialog over every storage volume (internal + SD). */
