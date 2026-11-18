@@ -30,7 +30,6 @@ private val EN = mapOf(
     "Déplacer dans un groupe" to "Move to a group",
     "Déplacer dans un groupe…" to "Move to a group…",
     "Déplacé dans « %s »" to "Moved to \"%s\"",
-    "Impossible : « %s » est dans ce dossier" to "Not possible: \"%s\" is inside this folder",
     "Retirer de « %s »" to "Remove from \"%s\"",
     "Ajouter à un bookmark…" to "Add to a bookmark…",
     "Ajouter à un bookmark" to "Add to a bookmark",

@@ -158,10 +158,21 @@ object Prefs {
             o.keys().asSequence().associateWith { k -> o.getJSONArray(k).let { a -> List(a.length(), a::getString) } }
         }.getOrDefault(emptyMap())
         groupAt = strings("groupAt").associate { it.substringBefore('\t') to it.substringAfter('\t', "") }
+        fixGroups() // heals groups saved inside a folder they hold
         actions = if (sp.contains("actions")) strings("actions") else listOf("favorite", "edit", "share", "delete", "info")
         trash = strings("trash").mapNotNull { line ->
             line.split('\t').takeIf { it.size == 3 }?.let { (t, o, time) -> t to TrashEntry(o, time.toLongOrNull() ?: 0) }
         }.toMap()
+    }
+
+    /** A group never sits inside a folder it holds (it would show inside itself): it goes to [fallback], else the main screen. */
+    fun fixGroups(fallback: String = "") {
+        val fixed = groupAt.mapValues { (name, at) ->
+            val held = bookmarks[name].orEmpty()
+            fun inside(p: String) = held.any { p == it || p.startsWith("$it/") }
+            when { !inside(at) -> at; !inside(fallback) -> fallback; else -> "" }
+        }
+        if (fixed != groupAt) groupAt = fixed
     }
 
     fun renamed(old: File, new: File) {

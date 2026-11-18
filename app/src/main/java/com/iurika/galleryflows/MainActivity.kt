@@ -80,6 +80,8 @@ class MainActivity : Base() {
     private lateinit var search: EditText
     private lateinit var crumbs: LinearLayout
     private lateinit var crumbScroll: HorizontalScrollView
+    private lateinit var marks: LinearLayout
+    private lateinit var marksScroll: HorizontalScrollView
     private lateinit var title: TextView
     private lateinit var shuffleButton: ImageView
     private lateinit var status: TextView
@@ -158,6 +160,8 @@ class MainActivity : Base() {
         }
         crumbs = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         crumbScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(crumbs) }
+        marks = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        marksScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(marks) }
         title = TextView(this).apply {
             setTextColor(WHITE); textSize = 26f; typeface = Typeface.DEFAULT_BOLD; setSingleLine(); ellipsize = TextUtils.TruncateAt.END
         }
@@ -184,6 +188,7 @@ class MainActivity : Base() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(bar, LP(-1, dp(56)).apply { setMargins(dp(12), dp(8), dp(12), dp(4)) })
+            addView(marksScroll, LP(-1, -2).apply { setMargins(dp(12), dp(6), dp(12), 0) })
             addView(crumbScroll, LP(-1, -2).apply { setMargins(dp(12), dp(8), dp(12), 0) })
             addView(titleRow, LP(-1, -2).apply { setMargins(dp(20), dp(4), dp(8), 0) })
             addView(status)
@@ -317,7 +322,38 @@ class MainActivity : Base() {
                 .toList().asReversed().forEach { f -> crumb(f.name) { go(f, back = true) } }
         }
         crumbScroll.post { crumbScroll.fullScroll(View.FOCUS_RIGHT) }
+        renderMarks()
         renderSelectionBar()
+    }
+
+    /** Bookmarks as chips under the search bar, on the main screen and inside a bookmark, to hop between them. */
+    private fun renderMarks() {
+        marks.removeAllViews()
+        val show = !picking && Prefs.bookmarks.isNotEmpty() && (mode == Mode.BOOKMARK || (mode == Mode.BROWSE && dir == null))
+        marksScroll.visibility = if (show) View.VISIBLE else View.GONE
+        if (!show) return
+        val names = Prefs.bookmarks.keys.toList()
+        val imgs = names.map { name ->
+            val on = mode == Mode.BOOKMARK && bookmark == name
+            val img = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true
+                background = rounded(0xff2a2a2a.toInt(), 16)
+                foreground = if (on) GradientDrawable().apply { cornerRadius = dp(16).toFloat(); setStroke(dp(3), ACCENT) } else ripple(rounded(WHITE, 16))
+            }
+            marks.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+                addView(img, LP(dp(64), dp(64)))
+                addView(TextView(this@MainActivity).apply {
+                    text = name; textSize = 12f; setSingleLine(); ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
+                    setTextColor(if (on) ACCENT else WHITE); setPadding(0, dp(4), 0, 0)
+                }, LP(-1, -2))
+                setOnClickListener { if (on) { bookmark = null; go(null, back = true) } else openBookmark(name) }
+                setOnLongClickListener { bookmarkMenu(name); true }
+            }, LP(dp(72), -2).apply { marginEnd = dp(6) })
+            img
+        }
+        thread { val covers = names.map { markInfo(it).cover }; runOnUiThread { imgs.zip(covers).forEach { (v, c) -> Thumbs.load(v, c) } } }
+        if (mode == Mode.BOOKMARK) marksScroll.post { marks.getChildAt(Prefs.bookmarks.keys.indexOf(bookmark))?.let { marksScroll.smoothScrollTo(it.left - dp(12), 0) } }
     }
 
     private fun crumb(label: String, onClick: () -> Unit) {
@@ -427,28 +463,33 @@ class MainActivity : Base() {
     private fun here() = when (mode) { Mode.BROWSE -> dir?.path ?: ""; Mode.BOOKMARK -> groupAt()?.path ?: ""; else -> "" }
 
     private fun groupCards(at: String) = Prefs.groupAt.filterValues { it == at }.keys.sortedWith(String.CASE_INSENSITIVE_ORDER).map { name ->
+        Card(name, markInfo(name), false, { openBookmark(name) }, { bookmarkMenu(name) })
+    }
+
+    /** A bookmark's count and cover (its newest picture). Walks folders, so off the UI thread. */
+    private fun markInfo(name: String): Info {
         val inside = Prefs.bookmarks[name].orEmpty().map(::File).filter { it.exists() }
             .map { if (it.isDirectory) Scan.info(it) else Info(1, it, it.lastModified()) }
         val top = inside.filter { it.cover != null }.maxByOrNull { it.newest }
-        Card(name, Info(inside.sumOf { it.count }, top?.cover, top?.newest ?: 0), false, { openBookmark(name) }, { bookmarkMenu(name) })
+        return Info(inside.sumOf { it.count }, top?.cover, top?.newest ?: 0)
     }
 
     private fun moveToGroup(f: File) {
-        val put = { name: String ->
-            val at = Prefs.groupAt[name] ?: here()
-            if (at == f.path || at.startsWith("${f.path}/")) toast(t("Impossible : « %s » est dans ce dossier", name))
-            else {
-                val b = Prefs.bookmarks // out of any other group, into this one
-                Prefs.bookmarks = b.mapValues { (k, v) -> if (k in Prefs.groupAt) v - f.path else v } + (name to (b[name].orEmpty() + f.path).distinct())
-                Prefs.groupAt = Prefs.groupAt + (name to at)
-                toast(t("Déplacé dans « %s »", name)); load(keepScroll = true)
-            }
-        }
+        val put = { name: String -> intoGroup(name, listOf(f.path)); toast(t("Déplacé dans « %s »", name)) }
         val names = Prefs.groupAt.keys.sortedWith(String.CASE_INSENSITIVE_ORDER)
         if (names.isEmpty()) return newBookmark(t("Nouveau groupe"), put)
         AlertDialog.Builder(this).setTitle(t("Déplacer dans un groupe"))
             .setItems((names + "＋  " + t("Nouveau groupe…")).toTypedArray()) { _, i -> if (i < names.size) put(names[i]) else newBookmark(t("Nouveau groupe"), put) }
             .show()
+    }
+
+    /** Out of any other group, into this one. Every way into a group goes through here, bookmark dialog included. */
+    private fun intoGroup(name: String, paths: List<String>) {
+        Prefs.groupAt = Prefs.groupAt + (name to (Prefs.groupAt[name] ?: here())) // a new group goes where we are
+        val b = Prefs.bookmarks
+        Prefs.bookmarks = b.mapValues { (k, v) -> if (k in Prefs.groupAt) v - paths.toSet() else v } + (name to (b[name].orEmpty() + paths).distinct())
+        Prefs.fixGroups(here()) // moved its own folder in: the group goes where that folder was shown
+        selected.clear(); updateSelection(); load(keepScroll = true)
     }
 
     private fun show(cards: List<Card>, files: List<File>, keepScroll: Boolean) {
@@ -831,7 +872,8 @@ class MainActivity : Base() {
     /** Existing bookmarks to pick from, or a new one. */
     private fun addToBookmark(paths: List<String>) {
         val put = { name: String ->
-            Prefs.bookmarks = Prefs.bookmarks + (name to (Prefs.bookmarks[name].orEmpty() + paths).distinct())
+            if (name in Prefs.groupAt) intoGroup(name, paths)
+            else Prefs.bookmarks = Prefs.bookmarks + (name to (Prefs.bookmarks[name].orEmpty() + paths).distinct())
             toast(t("Ajouté à « %s »", name)); selected.clear(); updateSelection()
         }
         val names = Prefs.bookmarks.keys.toList()
