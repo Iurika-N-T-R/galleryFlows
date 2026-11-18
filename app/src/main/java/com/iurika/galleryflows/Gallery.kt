@@ -124,6 +124,8 @@ object Prefs {
         set(v) { field = v.distinct().take(6); put("targets", field) }
     var bookmarks: Map<String, List<String>> = emptyMap() // name -> folders and files, in the order added
         set(v) { field = v; sp.edit().putString("bookmarks", JSONObject(v.mapValues { JSONArray(it.value) }).toString()).apply() }
+    var groupAt: Map<String, String> = emptyMap() // bookmark shown as a folder in the gallery -> where: a folder path, "" = main screen
+        set(v) { field = v; put("groupAt", v.map { "${it.key}\t${it.value}" }) }
     var actions: List<String> = emptyList() // viewer bottom bar, keys of VIEWER_ACTIONS
         set(v) { field = v; put("actions", v) }
     var trash: Map<String, TrashEntry> = emptyMap() // trashed path -> where it came from
@@ -155,6 +157,7 @@ object Prefs {
             val o = JSONObject(sp.getString("bookmarks", null) ?: "{}")
             o.keys().asSequence().associateWith { k -> o.getJSONArray(k).let { a -> List(a.length(), a::getString) } }
         }.getOrDefault(emptyMap())
+        groupAt = strings("groupAt").associate { it.substringBefore('\t') to it.substringAfter('\t', "") }
         actions = if (sp.contains("actions")) strings("actions") else listOf("favorite", "edit", "share", "delete", "info")
         trash = strings("trash").mapNotNull { line ->
             line.split('\t').takeIf { it.size == 3 }?.let { (t, o, time) -> t to TrashEntry(o, time.toLongOrNull() ?: 0) }
@@ -166,6 +169,7 @@ object Prefs {
         if (old.path in pinned) pinned = pinned - old.path + new.path
         if (old.path in roots) roots = roots.map { if (it == old.path) new.path else it }
         if (old.path in custom) custom = custom.map { if (it == old.path) new.path else it }
+        if (old.path in groupAt.values) groupAt = groupAt.mapValues { if (it.value == old.path) new.path else it.value }
         if (bookmarks.values.any { old.path in it }) bookmarks = bookmarks.mapValues { (_, l) -> l.map { if (it == old.path) new.path else it } }
     }
 

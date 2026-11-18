@@ -233,7 +233,9 @@ class MainActivity : Base() {
     /** A folder with no media of its own and a single subfolder holding some: that subfolder, else null. */
     private fun lone(d: File): File? {
         val (dirs, media) = Scan.children(d)
-        return if (media.isNotEmpty()) null else dirs.filter { Scan.info(it).count > 0 }.singleOrNull()
+        if (media.isNotEmpty() || d.path in Prefs.groupAt.values) return null
+        val moved = moved()
+        return dirs.filter { it.path !in moved && Scan.info(it).count > 0 }.singleOrNull()
     }
 
     // Opening such a folder shows its subfolder straight away, as many levels down as it goes
@@ -278,6 +280,7 @@ class MainActivity : Base() {
             drawerOpen -> closeDrawer()
             selected.isNotEmpty() -> { selected.clear(); updateSelection() }
             search.text.isNotEmpty() -> search.text.clear()
+            mode == Mode.BOOKMARK -> { val at = groupAt(); bookmark = null; go(at, back = true) }
             mode != Mode.BROWSE -> go(null, back = true)
             d != null -> up(d).let { if (it == null && bookmark != null) go(null, Mode.BOOKMARK, back = true) else go(it, back = true) }
             else -> super.onBackPressed()
@@ -304,6 +307,7 @@ class MainActivity : Base() {
         crumbScroll.visibility = if (inside) View.VISIBLE else View.GONE
         crumb(t("Galerie")) { go(null, back = true) }
         val b = bookmark
+        groupAt()?.let { p -> crumb(p.name) { bookmark = null; go(p, back = true) } }
         if (b != null && mode == Mode.BROWSE) crumb(b) { go(null, Mode.BOOKMARK, back = true) }
         if (d != null) {
             val root = rootOf(d)
@@ -380,8 +384,9 @@ class MainActivity : Base() {
                 d == null -> { cards = rootCards(); emptyList() }
                 else -> {
                     val (dirs, found) = Scan.children(d)
+                    val moved = moved()
                     // only folders with media somewhere below them, like a gallery, but at every level
-                    cards = Scan.sortFolders(dirs.filter { Scan.info(it).count > 0 }).map { f ->
+                    cards = groupCards(d.path) + Scan.sortFolders(dirs.filter { it.path !in moved && Scan.info(it).count > 0 }).map { f ->
                         Card(f.name, Scan.info(f), f.path in Prefs.pinned, { go(f) }, { folderOptions(f) })
                     }
                     Scan.sortFiles(found)
@@ -400,15 +405,50 @@ class MainActivity : Base() {
         val favs = Prefs.favorites.map(::File).filter { it.exists() }
         val fav = if (favs.isEmpty()) emptyList()
         else listOf(Card(t("Favoris"), Info(favs.size, favs.maxByOrNull { it.lastModified() }, 0), false, { go(null, Mode.FAVORITES) }, null))
-        // roots keep the order they were added in, unless placed by hand
-        val placed = if (Prefs.sort == 7) Prefs.custom.withIndex().associate { it.value to it.index } else emptyMap()
-        val roots = Prefs.roots.map(::File).sortedBy { placed[it.path] ?: Int.MAX_VALUE }.sortedByDescending { it.path in Prefs.pinned }.map { f ->
+        val moved = moved()
+        val roots = groupCards("") + Scan.sortFolders(Prefs.roots.map(::File).filter { it.path !in moved }).map { f ->
             Card(f.name, Scan.info(f), f.path in Prefs.pinned, { go(f) }, { rootOptions(f) })
         }
         val trashed = if (Prefs.showTrash && !picking) Trash.items() else emptyList()
         val trash = if (trashed.isEmpty()) emptyList()
         else listOf(Card(t("Corbeille"), Info(trashed.size, trashed.first(), 0), false, { go(null, Mode.TRASH) }, null))
         return fav + roots + trash
+    }
+
+    // ---- groups: bookmarks shown as folders in the gallery, holding folders moved there (only in the app) ----
+
+    /** Folders moved into a group: their own parent no longer shows them. */
+    private fun moved() = Prefs.groupAt.keys.flatMap { Prefs.bookmarks[it].orEmpty() }.toSet()
+
+    /** The folder the open group sits in; null = the main screen or no group. */
+    private fun groupAt() = bookmark?.let { Prefs.groupAt[it] }?.takeIf { it.isNotEmpty() }?.let(::File)
+
+    /** Where a new group goes: the place on screen. */
+    private fun here() = when (mode) { Mode.BROWSE -> dir?.path ?: ""; Mode.BOOKMARK -> groupAt()?.path ?: ""; else -> "" }
+
+    private fun groupCards(at: String) = Prefs.groupAt.filterValues { it == at }.keys.sortedWith(String.CASE_INSENSITIVE_ORDER).map { name ->
+        val inside = Prefs.bookmarks[name].orEmpty().map(::File).filter { it.exists() }
+            .map { if (it.isDirectory) Scan.info(it) else Info(1, it, it.lastModified()) }
+        val top = inside.filter { it.cover != null }.maxByOrNull { it.newest }
+        Card(name, Info(inside.sumOf { it.count }, top?.cover, top?.newest ?: 0), false, { openBookmark(name) }, { bookmarkMenu(name) })
+    }
+
+    private fun moveToGroup(f: File) {
+        val put = { name: String ->
+            val at = Prefs.groupAt[name] ?: here()
+            if (at == f.path || at.startsWith("${f.path}/")) toast(t("Impossible : « %s » est dans ce dossier", name))
+            else {
+                val b = Prefs.bookmarks // out of any other group, into this one
+                Prefs.bookmarks = b.mapValues { (k, v) -> if (k in Prefs.groupAt) v - f.path else v } + (name to (b[name].orEmpty() + f.path).distinct())
+                Prefs.groupAt = Prefs.groupAt + (name to at)
+                toast(t("Déplacé dans « %s »", name)); load(keepScroll = true)
+            }
+        }
+        val names = Prefs.groupAt.keys.sortedWith(String.CASE_INSENSITIVE_ORDER)
+        if (names.isEmpty()) return newBookmark(t("Nouveau groupe"), put)
+        AlertDialog.Builder(this).setTitle(t("Déplacer dans un groupe"))
+            .setItems((names + "＋  " + t("Nouveau groupe…")).toTypedArray()) { _, i -> if (i < names.size) put(names[i]) else newBookmark(t("Nouveau groupe"), put) }
+            .show()
     }
 
     private fun show(cards: List<Card>, files: List<File>, keepScroll: Boolean) {
@@ -755,6 +795,7 @@ class MainActivity : Base() {
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
         if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
         bookmarkEntry(f),
+        t("Déplacer dans un groupe…") to { moveToGroup(f) },
         "Renommer" to { renameDialog(f) { n -> runOp { if (Ops.rename(this, f, n) != null) "Renommé" else "Impossible de renommer" } } },
         (if (Scan.hasNomedia(f)) "Afficher (retirer .nomedia)" else "Cacher (ajouter .nomedia)") to { Ops.setHidden(f, !Scan.hasNomedia(f)); refresh() },
         "Exclure de la galerie" to { Prefs.excluded = Prefs.excluded + f.path; refresh() },
@@ -766,6 +807,7 @@ class MainActivity : Base() {
         (if (f.path in Prefs.pinned) "Désépingler" else "Épingler en haut") to { togglePin(f) },
         if (Prefs.sort == 7) t("Placer en premier") to { placeFirst(listOf(f.path)) } else null,
         bookmarkEntry(f),
+        t("Déplacer dans un groupe…") to { moveToGroup(f) },
         "Créer un raccourci" to { shortcut(f) },
         "Retirer de l'écran principal" to { Prefs.roots = Prefs.roots - f.path; load(keepScroll = true) },
     ))
@@ -793,13 +835,13 @@ class MainActivity : Base() {
             toast(t("Ajouté à « %s »", name)); selected.clear(); updateSelection()
         }
         val names = Prefs.bookmarks.keys.toList()
-        if (names.isEmpty()) return newBookmark(put)
+        if (names.isEmpty()) return newBookmark(then = put)
         AlertDialog.Builder(this).setTitle(t("Ajouter à un bookmark"))
-            .setItems((names + "＋  " + t("Nouveau bookmark…")).toTypedArray()) { _, i -> if (i < names.size) put(names[i]) else newBookmark(put) }
+            .setItems((names + "＋  " + t("Nouveau bookmark…")).toTypedArray()) { _, i -> if (i < names.size) put(names[i]) else newBookmark(then = put) }
             .show()
     }
 
-    private fun newBookmark(then: (String) -> Unit) = ask(t("Nouveau bookmark"), "") { name ->
+    private fun newBookmark(title: String = t("Nouveau bookmark"), then: (String) -> Unit) = ask(title, "") { name ->
         if (name in Prefs.bookmarks) return@ask toast(t("« %s » existe déjà", name))
         Prefs.bookmarks = Prefs.bookmarks + (name to emptyList())
         then(name)
@@ -928,15 +970,17 @@ class MainActivity : Base() {
                 if (n == name) return@ask
                 if (n in Prefs.bookmarks) return@ask toast(t("« %s » existe déjà", n))
                 Prefs.bookmarks = Prefs.bookmarks.entries.associate { (k, v) -> (if (k == name) n else k) to v }
+                Prefs.groupAt[name]?.let { at -> Prefs.groupAt = Prefs.groupAt - name + (n to at) }
                 if (bookmark == name) bookmark = n
-                renderDrawer(); renderHeader()
+                renderDrawer(); load(keepScroll = true)
             }
         },
         t("Supprimer le bookmark") to {
             confirm(t("Supprimer le bookmark « %s » ? Les dossiers et les images ne sont pas touchés.", name)) {
                 Prefs.bookmarks = Prefs.bookmarks - name
+                Prefs.groupAt = Prefs.groupAt - name // its folders go back where they are on disk
                 renderDrawer()
-                if (bookmark == name) go(null)
+                if (bookmark == name) go(null) else load(keepScroll = true)
             }
         },
     ))
@@ -965,6 +1009,10 @@ class MainActivity : Base() {
                     ask("Nouveau dossier", "") { n -> toast(if (File(d, n).mkdir()) "Créé, visible dès qu'il contient des médias" else "Création impossible") }
                 }
             },
+            if (mode == Mode.BROWSE && !picking) "Créer un groupe" to {
+                val at = here()
+                newBookmark(t("Nouveau groupe")) { n -> Prefs.groupAt = Prefs.groupAt + (n to at); load(keepScroll = true) }
+            } else null,
             if (mode == Mode.TRASH) "Vider la corbeille" to {
                 confirm("Vider la corbeille ? Les fichiers seront supprimés définitivement.") { guardOps { runOp { Trash.empty(this) } } }
             } else null,

@@ -63,6 +63,7 @@ It is free, open source, has no internet permission and contains no ads or track
 | 🌳 | **Real folder tree** | Subfolders as cards with a cover and the media count of the whole subtree |
 | 🧭 | **Breadcrumb** | Jump back to any level; Back keeps your scroll position |
 | 🔖 | **Bookmarks** | Group folders and images into collections like *Art* or *References* |
+| 🗂️ | **Groups** | Virtual folders in the tree: move folders into them inside the app, nothing moves on disk |
 | 🖼️ | **Full viewer** | Zoom to full resolution, RAW, SVG, GIF, videos with gestures |
 | ✂️ | **Editor** | Crop, rotate, flip, brightness / contrast / saturation — EXIF kept |
 | 🗑️ | **Trash** | Instant delete, restore where it was, auto-clean after 30 days |
@@ -83,6 +84,8 @@ It is free, open source, has no internet permission and contains no ads or track
 - **Long press** a folder: pin it at the top, rename, hide it (`.nomedia`), exclude it, add it to the main screen, or create a home-screen shortcut to it.
 
 **Bookmarks** (swipe right anywhere on the grid, or the bookmark button next to the search bar, opens the sidebar; swipe left closes it): long-press a folder, or select images, then "Ajouter à un bookmark" to put them in a bookmark such as *Art* or *Références*, new or existing. Opening a bookmark shows only its folders and images; from there you browse into them as usual, and Back comes back to the bookmark.
+
+**Groups** (⋮ → "Créer un groupe", or long-press a folder → "Déplacer dans un groupe"): a virtual folder shown as a card right where you create it, on the main screen or inside any folder. Folders moved into it leave their usual place and appear in the group instead; nothing moves on disk. "Retirer de « … »" inside the group puts a folder back. Groups also appear in the sidebar with the bookmarks.
 
 **⋮ menu**: sort (name, location, dimensions, size, modified date, date taken, random, or custom: long-press items and put them first; ascending or descending), filter (images, videos, GIF, RAW, SVG, portrait shots), grid or list, 1 to 20 columns for folders and for media, show hidden files, new folder, shuffle, settings.
 
