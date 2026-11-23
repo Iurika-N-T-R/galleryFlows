@@ -211,7 +211,9 @@ data class Info(val count: Int, val cover: File?, val newest: Long)
 object Scan {
     private lateinit var ctx: Context
     @Volatile private var cache = ConcurrentHashMap<String, Info>()
-    @Volatile private var cleared = 0
+    @Volatile private var cleared = 0 // bumped by clear and invalidate: walks that started before don't cache their counts
+    @Volatile private var wiped = 0 // bumped by clear only: a rescan running then is thrown away
+    private val changed = HashSet<String>() // invalidated during a rescan, dropped from its result too; lock: itself
     private val saved get() = File(ctx.filesDir, "scan") // not cacheDir: Android empties that whenever storage runs low
     var stale = false // the cache came from disk: show it at once, then [rescan]
 
@@ -236,13 +238,26 @@ object Scan {
 
     /** Walks every root again in the background and swaps the result in, unless a [clear] happened meanwhile. */
     fun rescan() {
-        val gen = cleared
+        val w = wiped
+        synchronized(changed) { changed.clear() }
         val fresh = ConcurrentHashMap<String, Info>()
         Prefs.roots.forEach { info(File(it), into = fresh) }
-        if (gen == cleared) { cache = fresh; save() }
+        if (w != wiped) return
+        synchronized(changed) { cache = fresh; changed.forEach { forget(fresh, it) } }
+        save()
     }
 
-    fun clear() { cleared++; cache.clear() }
+    fun clear() { cleared++; wiped++; cache.clear() }
+
+    /** Forgets only the folders holding [paths] (and a changed folder itself), up to the top: the next look walks
+     *  just those again, the rest of the gallery shows at once from the cache. */
+    fun invalidate(paths: Collection<String>) {
+        if (paths.isEmpty()) return
+        cleared++ // walks already running don't write their older counts back
+        synchronized(changed) { changed += paths; paths.forEach { forget(cache, it) } } // ponytail: [changed] only empties at the next rescan; a few paths per change
+    }
+
+    private fun forget(m: MutableMap<String, Info>, path: String) { var d: File? = File(path); while (d != null) { m.remove(d.path); d = d.parentFile } }
 
     private fun visible(f: File) = (Prefs.showHidden || !f.name.startsWith('.')) && f.path !in Prefs.excluded && f.name != Trash.DIR
     private fun wanted(f: File) = kindOf(f.name)?.let { Prefs.hiddenKinds and (1 shl it.ordinal) == 0 } == true && visible(f)
@@ -258,18 +273,19 @@ object Scan {
     }
 
     // Media count and newest file of a whole subtree, memoized so one walk of a root caches every folder below it
-    fun info(dir: File, depth: Int = 0, into: MutableMap<String, Info> = cache): Info = into[dir.path] ?: run {
+    // [gen]: a walk that started before a change keeps its result to itself instead of caching counts that may be gone
+    fun info(dir: File, depth: Int = 0, into: MutableMap<String, Info> = cache, gen: Int = cleared): Info = into[dir.path] ?: run {
         val files = dir.listFiles().orEmpty()
         var count = 0
         var cover: File? = null
         var newest = 0L
         if (depth < 32 && (Prefs.showHidden || files.none { it.name == ".nomedia" })) for (f in files) {
-            val i = if (f.isDirectory) { if (!visible(f)) continue; info(f, depth + 1, into) }
+            val i = if (f.isDirectory) { if (!visible(f)) continue; info(f, depth + 1, into, gen) }
             else if (wanted(f)) Info(1, f.takeIf { kindOf(it.name) != Kind.SVG }, f.lastModified()) else continue // an SVG's tile makes a poor cover
             count += i.count
             if (i.cover != null && i.newest >= newest) { newest = i.newest; cover = i.cover }
         }
-        Info(count, cover, newest).also { into[dir.path] = it }
+        Info(count, cover, newest).also { if (into !== cache || gen == cleared) into[dir.path] = it }
     }
 
     /** Media whose name contains [q], anywhere below [dirs]. */

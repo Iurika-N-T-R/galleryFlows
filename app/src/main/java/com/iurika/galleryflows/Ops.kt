@@ -40,7 +40,7 @@ object Ops {
                 if (move) { changed += f.path; Prefs.renamed(f, target) }
             }
         }
-        if (move) cleanEmpty(files)
+        if (move) changed += cleanEmpty(files)
         rescan(c, changed)
         return t(if (move) "Déplacé : %d/%d" else "Copié : %d/%d", ok, files.size)
     }
@@ -50,11 +50,10 @@ object Ops {
         val toTrash = Prefs.useTrash && !permanent
         val gone = files.filter { f ->
             if (toTrash && !Trash.contains(f)) Trash.put(c, f)
-            else f.delete().also { if (it) Trash.forget(f) }
+            else { Thumbs.forget(f); f.delete().also { if (it) Trash.forget(f) } } // its thumbnail goes too
         }
         Prefs.favorites = Prefs.favorites - gone.map { it.path }.toSet()
-        cleanEmpty(gone)
-        rescan(c, gone.map { it.path })
+        rescan(c, gone.map { it.path } + cleanEmpty(gone))
         return t(if (toTrash) "Mis à la corbeille : %d/%d" else "Supprimé : %d/%d", gone.size, files.size)
     }
 
@@ -68,20 +67,25 @@ object Ops {
     }
 
     /** Hide / show a folder the standard way, so other galleries hide it too. */
-    fun setHidden(dir: File, hidden: Boolean) = File(dir, ".nomedia").let { if (hidden) it.createNewFile() else it.delete() }
+    fun setHidden(dir: File, hidden: Boolean) = File(dir, ".nomedia").let { Scan.invalidate(listOf(it.path)); if (hidden) it.createNewFile() else it.delete() }
 
-    // "Supprimer les dossiers vides": the folders we just emptied, never a root or a trash folder
-    private fun cleanEmpty(files: Collection<File>) {
-        if (!Prefs.deleteEmptyFolders) return
+    // "Supprimer les dossiers vides": the folders we just emptied, never a root or a trash folder.
+    // Returns them, so the system index forgets them too.
+    private fun cleanEmpty(files: Collection<File>): List<String> {
+        if (!Prefs.deleteEmptyFolders) return emptyList()
+        val gone = ArrayList<String>()
         for (d in files.mapNotNull { it.parentFile }.distinct()) {
             if (d.path in Prefs.roots || d.name == Trash.DIR) continue
             val left = d.listFiles() ?: continue
-            if (left.all { it.isFile && it.name == ".nomedia" }) { left.forEach { it.delete() }; d.delete() }
+            if (left.all { it.isFile && it.name == ".nomedia" }) { left.forEach { it.delete() }; if (d.delete()) gone += d.path }
         }
+        return gone
     }
 
     // Keeps the system MediaStore (other apps, the old gallery) in sync with what we changed
+    // and drops the gallery's counts for the folders that held them
     fun rescan(c: Context, paths: List<String>) {
+        Scan.invalidate(paths)
         if (paths.isNotEmpty()) MediaScannerConnection.scanFile(c.applicationContext, paths.toTypedArray(), null, null)
     }
 }

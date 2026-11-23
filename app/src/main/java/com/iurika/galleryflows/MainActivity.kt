@@ -7,6 +7,7 @@ import android.widget.RadioButton
 import android.text.InputType
 import android.graphics.drawable.RippleDrawable
 import android.graphics.Typeface
+import android.graphics.Rect
 import android.graphics.RectF
 import android.content.res.ColorStateList
 import android.content.ClipData
@@ -19,6 +20,8 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
@@ -60,6 +63,7 @@ class MainActivity : Base() {
     private var bookmark: String? = null // opened from the sidebar: its folders stand in for the roots until "Galerie"
     private var rows: List<List<Any>> = emptyList() // each row holds Cards (folders) or Files (media)
     private var media: List<File> = emptyList()
+    private var mediaIndex: Map<String, Int> = emptyMap() // path -> place in [media], for slide-to-select
     private val selected = LinkedHashSet<File>()
     private val scrollMemory = HashMap<String, Int>()
     private var generation = 0
@@ -109,7 +113,7 @@ class MainActivity : Base() {
     override fun onUnlocked() {
         if (!Environment.isExternalStorageManager()) return askPermission()
         if (!built) { build(); built = true }
-        if (Session.dirty) { Session.dirty = false; Scan.clear() }
+        Session.dirty = false // file changes already dropped their folders' counts (Ops.rescan); settings clear what they change
         load(keepScroll = true)
         if (Scan.stale) {
             Scan.stale = false
@@ -383,7 +387,7 @@ class MainActivity : Base() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (pullFrom >= 0 && e.y - pullFrom >= dp(120)) {
                     pullIcon.animate().rotationBy(720f).setDuration(900).start()
-                    refresh()
+                    rescanAll()
                 } else pullIcon.visibility = View.GONE
                 pullFrom = -1f
             }
@@ -495,6 +499,7 @@ class MainActivity : Base() {
     private fun show(cards: List<Card>, files: List<File>, keepScroll: Boolean) {
         if (leaving) { whenLeft = { show(cards, files, keepScroll) }; return }
         media = files
+        mediaIndex = files.withIndex().associate { it.value.path to it.index }
         pullIcon.animate().cancel(); pullIcon.visibility = View.GONE
         selected.retainAll(files.toSet())
         // sideways scrolling is for grids; a list stays a list
@@ -520,7 +525,11 @@ class MainActivity : Base() {
         updateSelection()
     }
 
-    private fun refresh() { Scan.clear(); load(keepScroll = true) }
+    /** After a change: the cache already forgot what changed, so this shows at once. */
+    private fun refresh() = load(keepScroll = true)
+
+    /** Pull down, "Actualiser", hidden files or kinds shown: every folder walked again, the old view stays up meanwhile. */
+    private fun rescanAll() { Scan.clear(); load(keepScroll = true) }
 
     // ---- grid / list ----
 
@@ -547,7 +556,7 @@ class MainActivity : Base() {
                 when (val item = row[0]) {
                     is Card -> bindLine(v, item.info.cover, item.name, plural(item.info.count, "fichier"), item.pinned, false,
                         { item.open() }, { item.options?.invoke(); item.options != null })
-                    is File -> bindLine(v, item, item.name, details(item), false, item in selected, { tap(item, v.getChildAt(0)) }, { toggle(item); true })
+                    is File -> bindLine(v, item, item.name, details(item), false, item in selected, { tap(item, v.getChildAt(0)) }, { startDrag(item); true })
                 }
                 return v
             }
@@ -675,7 +684,7 @@ class MainActivity : Base() {
             img.animate().scaleX(if (on) .88f else 1f).scaleY(if (on) .88f else 1f).setDuration(150).start()
         }
         cell.setOnClickListener { tap(f, img) }
-        cell.setOnLongClickListener { toggle(f); true }
+        cell.setOnLongClickListener { startDrag(f); true }
     }
 
     private fun tap(f: File, from: View) {
@@ -773,6 +782,70 @@ class MainActivity : Base() {
 
     private fun toggle(f: File) { if (!selected.add(f)) selected.remove(f); updateSelection() }
 
+    // ---- long-press, then slide: every file between the pressed one and the finger (like Google Photos) ----
+
+    private var dragFrom = -1 // place in [media] of the long-pressed file; -1 = not sliding
+    private var dragBase: Set<File> = emptySet() // the selection before, so sliding back gives files back
+    private var dragAdd = true // pressed an unselected file: the range gets selected, else unselected
+    private var dragX = 0f
+    private var dragY = 0f
+    private var dragCancel = false
+    private var dragScrolling = false
+
+    private fun startDrag(f: File) {
+        dragBase = selected.toSet()
+        dragAdd = f !in selected
+        dragFrom = mediaIndex[f.path] ?: -1
+        dragCancel = true
+        toggle(f)
+    }
+
+    private fun drag(e: MotionEvent) {
+        if (dragCancel) { // the grid stops seeing this gesture: no scroll, no tap
+            dragCancel = false
+            val c = MotionEvent.obtain(e).apply { action = MotionEvent.ACTION_CANCEL }
+            super.dispatchTouchEvent(c); c.recycle()
+        }
+        when (e.actionMasked) {
+            MotionEvent.ACTION_MOVE -> { dragX = e.x; dragY = e.y; dragTo(); if (!dragScrolling) dragScroll.run() }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { dragFrom = -1; dragScrolling = false; list.removeCallbacks(dragScroll) }
+        }
+    }
+
+    private fun dragTo() {
+        val i = fileAt(dragX, dragY)?.let { mediaIndex[it.path] } ?: return
+        val range = media.subList(min(i, dragFrom), max(i, dragFrom) + 1)
+        val now = if (dragAdd) dragBase + range else dragBase - range.toSet()
+        if (now == selected) return
+        selected.clear(); selected.addAll(now); updateSelection()
+    }
+
+    // Near the top or bottom of the grid, it scrolls by itself while the finger stays there
+    private val dragScroll = object : Runnable {
+        override fun run() {
+            val at = IntArray(2).also(list::getLocationInWindow)
+            val edge = dp(72)
+            val dy = when { dragY < at[1] + edge -> -dp(16); dragY > at[1] + list.height - edge -> dp(16); else -> 0 }
+            dragScrolling = dragFrom >= 0 && dy != 0 && !turn.on // ponytail: sideways grid doesn't auto-scroll, slide then scroll by hand
+            if (!dragScrolling) return
+            list.scrollListBy(dy); dragTo()
+            list.postOnAnimation(this)
+        }
+    }
+
+    /** The file whose thumbnail is under ([x], [y]) in window coordinates; thumbnails carry Thumbs' "path|date|size[|px]" tag. */
+    private fun fileAt(x: Float, y: Float): File? {
+        val r = Rect()
+        fun find(v: View): String? = when {
+            v is ImageView -> (v.tag as? String)?.takeIf { v.isShown && v.getGlobalVisibleRect(r) && r.contains(x.toInt(), y.toInt()) }
+            v is ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { find(v.getChildAt(it)) }
+            else -> null
+        }
+        val key = find(list) ?: return null
+        val a = key.substringBeforeLast('|').substringBeforeLast('|')
+        return File(if (a in mediaIndex) a else a.substringBeforeLast('|'))
+    }
+
     private fun updateSelection() {
         selectionBar.visibility = if (selected.isEmpty()) View.GONE else View.VISIBLE
         selectionCount.text = "${selected.size}"
@@ -839,7 +912,7 @@ class MainActivity : Base() {
         t("Déplacer dans un groupe…") to { moveToGroup(f) },
         "Renommer" to { renameDialog(f) { n -> runOp { if (Ops.rename(this, f, n) != null) "Renommé" else "Impossible de renommer" } } },
         (if (Scan.hasNomedia(f)) "Afficher (retirer .nomedia)" else "Cacher (ajouter .nomedia)") to { Ops.setHidden(f, !Scan.hasNomedia(f)); refresh() },
-        "Exclure de la galerie" to { Prefs.excluded = Prefs.excluded + f.path; refresh() },
+        "Exclure de la galerie" to { Prefs.excluded = Prefs.excluded + f.path; Scan.invalidate(listOf(f.path)); refresh() },
         "Ajouter à l'écran principal" to { Prefs.roots = Prefs.roots + f.path; toast("Ajouté à l'écran principal") },
         "Créer un raccourci" to { shortcut(f) },
     ))
@@ -922,6 +995,7 @@ class MainActivity : Base() {
     // Anywhere on the screen, since the grid only scrolls up and down; the very edge is the system's back gesture.
     // Scrolling sideways, only from the left edge.
     override fun dispatchTouchEvent(e: MotionEvent): Boolean {
+        if (dragFrom >= 0) { drag(e); return true }
         if (!built || picking) return super.dispatchTouchEvent(e)
         val w = dp(300).toFloat()
         when (e.actionMasked) {
@@ -1062,7 +1136,7 @@ class MainActivity : Base() {
                 pickFolder("Ajouter un dossier", d) { f -> Prefs.roots = Prefs.roots + f.path; go(null) }
             },
             if (mode != Mode.TRASH && !picking) "Aléatoire…" to ::shuffleDialog else null,
-            "Actualiser" to ::refresh,
+            "Actualiser" to ::rescanAll,
             if (picking) null else "Paramètres" to { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
         PopupMenu(this, anchor).apply {
@@ -1073,7 +1147,7 @@ class MainActivity : Base() {
     }
 
     private fun toggleHidden() {
-        val flip = { Prefs.showHidden = !Prefs.showHidden; refresh() }
+        val flip = { Prefs.showHidden = !Prefs.showHidden; rescanAll() }
         if (!Prefs.showHidden && Prefs.lockHidden) authenticate(t("Afficher les éléments cachés"), flip) else flip()
     }
 
@@ -1098,7 +1172,7 @@ class MainActivity : Base() {
         val labels = arrayOf("Images", "Vidéos", "GIF", "Images RAW", "SVG", "Portraits").map { t(it) }.toTypedArray() // Kind order
         AlertDialog.Builder(this).setTitle(t("Filtrer les médias"))
             .setMultiChoiceItems(labels, checked) { _, i, on -> checked[i] = on }
-            .setPositiveButton("OK") { _, _ -> Prefs.hiddenKinds = checked.indices.filter { !checked[it] }.sumOf { 1 shl it }; refresh() }
+            .setPositiveButton("OK") { _, _ -> Prefs.hiddenKinds = checked.indices.filter { !checked[it] }.sumOf { 1 shl it }; rescanAll() }
             .setNegativeButton(t("Annuler"), null).show()
     }
 
